@@ -15,12 +15,12 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
-INPUT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
-{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}
+INPUT='{"jsonrpc":"2.0","id":1,"method":"test/unknown","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"test/unknown2","params":{}}
 
-{"jsonrpc":"2.0","id":"req-3","method":"session/prompt","params":null}
+{"jsonrpc":"2.0","id":"req-3","method":"test/unknown3","params":null}
 {not json
-{"jsonrpc":"2.0","id":4,"method":"session/cancel","params":{"sessionId":"s1"}}'
+{"jsonrpc":"2.0","id":4,"method":"test/unknown4","params":null}'
 
 EXPECTED='{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}
 {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found"}}

@@ -54,6 +54,16 @@ Format:
 **Options considered:** system package (needs sudo), manual tarball, mise.
 **Outcome:** **mise** — user-level, no sudo, `mise.toml` pins `zig@0.16.0`.
 
+### 2025-08-10 — F2: version-namespaced protocol + initialize contract
+
+**Context:** F2 planning; user requested namespaced v1/v2 protocol support ("2 can ref 1") and MVP-surface capability advertisement.
+**Outcome:**
+- **Layout:** `protocol/v1/` (methods + types) and `protocol/v2/` (placeholder, may `@import` v1); `json_rpc.zig` stays shared
+- **Registry:** version-keyed comptime method table; `Handler = fn(allocator, params) !Value`; error mapping InvalidParams → -32602, InvalidRequest → -32600, else -32603
+- **initialize:** accepts integer `protocolVersion ≥ 1`, responds `1` (negotiate down); missing/non-integer/zero → -32602
+- **Capabilities:** advertise the **MVP surface** (user decision): `agentCapabilities: {sessionCapabilities: {}, promptCapabilities: {}}` — baseline sessions + text-only prompts; `authMethods: []`, `agentInfo: {name: agent-client-protocol, version 0.1.0}`
+- **Terminology:** ACP v1/v2 are **session-oriented** (session/new → session/prompt → session/update → PromptResponse); no Thread/Turn types — glossary/README/backlog corrected
+
 ### 2025-08-10 — JSON-RPC transport conventions (F1)
 
 **Context:** F1 planning; grounded in ACP v1 schema and the fossil client contract (`~/Downloads/fossil-linux-x64-2.28/fossil-agent.tcl`, read-only).

@@ -9,14 +9,14 @@ Project-specific terms and definitions. Add entries as concepts become load-bear
 - **Request ID correlation** — ACP associates responses to requests via a `request_id` in notifications (e.g., `turn/update` carrying the `request_id` of the originating `turn/create`).
 - **Provider adapter** — internal abstraction isolating ACP protocol semantics from model provider HTTP APIs (OpenAI, etc.). See `src/provider/adapter.zig`.
 
-## ACP Core Types
+## ACP Core Types (session-oriented — per schema v1/v2)
 
-- **Session** — the top-level container: a conversation history shared across threads. `session/new` creates one.
-- **Thread** — a single conversation within a session. `thread/create` starts one.
-- **Turn** — a single exchange in a thread: user input + agent output (possibly multiple messages). `turn/create` initiates; `turn/update` streams progress.
-- **Message** — a single message in a turn, with a role (user/agent) and content blocks.
-- **Content block** — typed message content: `text`, `image`, `audio`, `tool_call`, `tool_result`, `file`.
-- **Tool call** — server asks the *client* to execute a tool (tools are client-provided in ACP). `tool/call` request; result delivered via `tool_result` content block in a subsequent turn.
+- **Session** — the top-level container: a conversation history and state. `session/new` creates one; `session/prompt` sends prompts into it; `session/cancel` interrupts. No Thread/Turn types exist in the current schemas (earlier ACP drafts used them; the pinned v1/v2 schemas do not).
+- **Prompt** — the unit of exchange: `session/prompt` params carry a `prompt` array of content blocks (text, etc.).
+- **SessionUpdate** — the streaming update notification: `session/update` params carry `update.sessionUpdate` variants (`agent_message_chunk`, `agent_message_completed`, `plan_update`, `session_info_update`, `usage_update`, `config_update`, `current_mode_update`, …).
+- **PromptResponse** — the result of a prompt turn, incl. `stopReason` (e.g. `end_turn`, `max_tokens`, `cancelled`).
+- **Content block** — typed content: `text`, `image`, `audio`, `tool_call`, `tool_result`, `file` (schema `ContentBlock`).
+- **Tool call** — the server asks the *client* to execute a tool (tools are client-provided in ACP); results flow back via `tool_result` content in a subsequent prompt / follow-up turn.
 - **Capabilities** — negotiated at `initialize`: server exposes model capabilities; client exposes its own (e.g., tools, prompts, partners).
 - **Partner** — a distinct agent identity (model, provider, persona) the client may select between.
 - **protocolVersion** — uint16 negotiated in the ACP `initialize` handshake; bumped only for breaking changes, so the server can support multiple protocol versions and route to a versioned method registry. Non-breaking additions arrive via capabilities negotiation.

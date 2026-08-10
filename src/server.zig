@@ -14,6 +14,7 @@ const std = @import("std");
 const Io = std.Io;
 
 const json_rpc = @import("protocol/json_rpc.zig");
+const methods_v1 = @import("protocol/v1/methods.zig");
 
 /// Protocol messages only on stdout; all logging goes to stderr (callers
 /// wire the file handles).
@@ -66,9 +67,10 @@ pub fn run(
     // EOF: exit cleanly, no further writes.
 }
 
-/// F1 dispatch: no methods implemented yet — every request answers
-/// `method not found` (-32601). Notifications and unexpected inbound
-/// responses are ignored. Method handlers land in F2+.
+/// Dispatch a request through the active protocol registry. For F2 the v1
+/// registry serves every connection; version selection per connection arrives
+/// with session state (F3). Notifications and unexpected inbound responses
+/// are ignored.
 fn dispatch(
     writer: *Io.Writer,
     allocator: std.mem.Allocator,
@@ -76,11 +78,31 @@ fn dispatch(
 ) !void {
     switch (message) {
         .request => |r| {
-            try respondError(writer, allocator, r.id, json_rpc.ErrorCode.method_not_found, "Method not found");
+            if (methods_v1.lookup(r.method)) |handler| {
+                const result = handler(allocator, r.params) catch |err| {
+                    try respondError(writer, allocator, r.id, errorCode(err), "Method failed");
+                    return;
+                };
+                try json_rpc.serializeResponse(allocator, writer, r.id, result);
+                try writer.writeAll("\n");
+                try writer.flush();
+            } else {
+                try respondError(writer, allocator, r.id, json_rpc.ErrorCode.method_not_found, "Method not found");
+            }
         },
         .notification => {},
         .response, .error_response => {},
     }
+}
+
+/// Map handler errors to JSON-RPC codes: InvalidParams → -32602,
+/// InvalidRequest → -32600, anything else (incl. OOM) → -32603.
+fn errorCode(err: anyerror) i32 {
+    return switch (err) {
+        error.InvalidParams => json_rpc.ErrorCode.invalid_params,
+        error.InvalidRequest => json_rpc.ErrorCode.invalid_request,
+        else => json_rpc.ErrorCode.internal_error,
+    };
 }
 
 fn respondError(
@@ -117,12 +139,12 @@ fn expectRun(input: []const u8, expected: []const u8) !void {
 
 test "transcript: requests answer method-not-found with verbatim ids" {
     const input =
-        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
-        \\{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}
+        \\{"jsonrpc":"2.0","id":1,"method":"test/unknown","params":{}}
+        \\{"jsonrpc":"2.0","id":2,"method":"test/unknown2","params":{}}
         \\
-        \\{"jsonrpc":"2.0","id":"req-3","method":"session/prompt","params":null}
+        \\{"jsonrpc":"2.0","id":"req-3","method":"test/unknown3","params":null}
         \\{not json
-        \\{"jsonrpc":"2.0","id":4,"method":"session/cancel","params":{"sessionId":"s1"}}
+        \\{"jsonrpc":"2.0","id":4,"method":"test/unknown4","params":null}
     ;
     const expected =
         \\{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}
@@ -165,4 +187,29 @@ test "line without trailing newline at EOF is processed" {
     const input = "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"session/new\",\"params\":{}}";
     const expected = "{\"jsonrpc\":\"2.0\",\"id\":5,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}\n";
     try expectRun(input, expected);
+}
+
+test "initialize handshake: full response, verbatim id" {
+    const input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1,\"clientCapabilities\":{},\"clientInfo\":{\"name\":\"fossil-agent\",\"version\":\"1.0\"}}}\n";
+    const expected = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"sessionCapabilities\":{},\"promptCapabilities\":{}},\"authMethods\":[],\"agentInfo\":{\"name\":\"agent-client-protocol\",\"version\":\"0.1.0\"}}}\n";
+    try expectRun(input, expected);
+}
+
+test "initialize: invalid protocolVersion answers -32602" {
+    const input = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"initialize\",\"params\":{\"protocolVersion\":0}}\n";
+    const expected = "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32602,\"message\":\"Method failed\"}}\n";
+    try expectRun(input, expected);
+}
+
+test "initialize then unimplemented session method (fossil flow)" {
+    const input =
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+        \\{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
+    ;
+    const expected =
+        \\{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{},"promptCapabilities":{}},"authMethods":[],"agentInfo":{"name":"agent-client-protocol","version":"0.1.0"}}}
+        \\{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found"}}
+    ;
+    // Zig multiline literals omit the final newline; the loop emits one per line.
+    try expectRun(input, expected ++ "\n");
 }

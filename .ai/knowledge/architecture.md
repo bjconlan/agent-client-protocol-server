@@ -14,7 +14,7 @@ System architecture decisions and rationale. Updated whenever a decision is revi
                               │ JSON-RPC 2.0 over stdio
                  ┌────────────▼─────────────┐
                  │      src/main.zig         │  transport loop: parse stdin → dispatch → write stdout
-                 │      protocol/            │  ACP v1 types + method handlers (session/*, thread/*, turn/*, tool/*, prompt/*)
+                 │      protocol/            │  ACP v1 types + method handlers (initialize, session/*, prompt/*, tool/*)
                  │      provider/            │  provider adapters (OpenAI Responses first)
                  └────────────┬─────────────┘
                               │ HTTPS
@@ -25,10 +25,11 @@ System architecture decisions and rationale. Updated whenever a decision is revi
 
 ## MVP scope (confirmed 2025-08-10)
 
-Usable-for-basic-use ACP v1 server, OpenAI Responses API only, no config file, minimal env vars (`OPENAI_API_KEY`). Deployed locally first; cross-platform + GitHub Actions release builds later. The first feature (planning stage) defines the exact MVP method set — likely: `initialize`, `session/new`, `thread/create`, `turn/create` (+ streaming `turn/update`), minimal `tool/call` support for client-provided tools.
+Usable-for-basic-use ACP v1 server, OpenAI Responses API only, no config file, minimal env vars (`OPENAI_API_KEY`). Deployed locally first; cross-platform + GitHub Actions release builds later. The first feature (planning stage) defines the exact MVP method set — likely: `initialize`, `session/new`, `session/prompt` (+ streaming `session/update`), minimal `tool/call` support for client-provided tools.
 
 Key principles:
 - **Protocol/transport separated from provider** — `protocol/` knows ACP and JSON-RPC; `provider/` knows HTTP APIs; `src/main.zig` wires them together.
 - **Stdlib-only** — `std.json`, `std.http.Client`, `std.io`; no third-party Zig deps until a real need appears.
-- **Stateless core + explicit state** — sessions/threads/turns stored in memory (prototype phase); persistence is a later decision.
-- **Version-aware protocol layer** — ACP v1 primary, v2-ready. `InitializeRequest.protocolVersion` (uint16) selects a versioned method registry at the handshake; JSON-RPC framing and session/thread/turn core are shared across versions. Non-breaking additions ride on capabilities negotiation.
+- **Stateless core + explicit state** — sessions stored in memory (prototype phase); persistence is a later decision.
+- **Version-aware protocol layer** — ACP v1 primary, v2-ready. `InitializeRequest.protocolVersion` (uint16) selects a versioned method registry at the handshake; JSON-RPC framing and the session/prompt core are shared across versions. Non-breaking additions ride on capabilities negotiation.
+- **Session-oriented model** — ACP v1/v2 schemas are session-based (`session/new` → `session/prompt` → `session/update` stream → `PromptResponse`); there are no Thread/Turn types.
