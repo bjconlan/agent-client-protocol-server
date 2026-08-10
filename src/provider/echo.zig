@@ -11,24 +11,45 @@ const adapter = @import("adapter.zig");
 
 pub const generate: *const fn (
     allocator: std.mem.Allocator,
-    text_blocks: []const []const u8,
+    input: std.json.Value,
+    tool_results: []const adapter.ToolResult,
     options: adapter.Options,
 ) anyerror!adapter.Result = generateImpl;
 
 fn generateImpl(
     allocator: std.mem.Allocator,
-    text_blocks: []const []const u8,
+    input: std.json.Value,
+    tool_results: []const adapter.ToolResult,
     options: adapter.Options,
 ) anyerror!adapter.Result {
     _ = allocator;
-    for (text_blocks) |block| {
-        if (block.len == 0) continue;
-        if (options.is_cancelled(options.userdata)) {
-            return .{ .stop_reason = "cancelled", .usage = null };
+    _ = tool_results;
+    // Echo the user text blocks from the input items.
+    const arr = switch (input) {
+        .array => |a| a,
+        else => return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{} },
+    };
+    for (arr.items) |item| {
+        if (item != .object) continue;
+        const role = item.object.get("role") orelse continue;
+        if (role != .string or !std.mem.eql(u8, role.string, "user")) continue;
+        const content = item.object.get("content") orelse continue;
+        const blocks = switch (content) {
+            .array => |a| a,
+            else => continue,
+        };
+        for (blocks.items) |block| {
+            if (block != .object) continue;
+            const text = block.object.get("text") orelse continue;
+            if (text != .string) continue;
+            if (text.string.len == 0) continue;
+            if (options.is_cancelled(options.userdata)) {
+                return .{ .stop_reason = "cancelled", .usage = null, .tool_calls = &.{} };
+            }
+            try options.emit(text.string, options.userdata);
         }
-        try options.emit(block, options.userdata);
     }
-    return .{ .stop_reason = "end_turn", .usage = null };
+    return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{} };
 }
 
 // ---------------------------------------------------------------------------
@@ -55,10 +76,27 @@ test "echo: emits blocks, end_turn; honours cancellation" {
     defer threaded.deinit();
     var http: std.http.Client = .{ .allocator = a, .io = threaded.io() };
 
-    const result = try generateImpl(a, &.{ "hello", "world" }, .{
+    var input: std.json.Array = std.json.Array.init(a);
+    var content: std.json.Array = std.json.Array.init(a);
+    var text_item: std.json.ObjectMap = .empty;
+    try text_item.put(a, "type", .{ .string = "input_text" });
+    try text_item.put(a, "text", .{ .string = "hello" });
+    try content.append(.{ .object = text_item });
+    var text_item2: std.json.ObjectMap = .empty;
+    try text_item2.put(a, "type", .{ .string = "input_text" });
+    try text_item2.put(a, "text", .{ .string = "world" });
+    try content.append(.{ .object = text_item2 });
+    var msg: std.json.ObjectMap = .empty;
+    try msg.put(a, "type", .{ .string = "message" });
+    try msg.put(a, "role", .{ .string = "user" });
+    try msg.put(a, "content", .{ .array = content });
+    try input.append(.{ .object = msg });
+
+    const result = try generateImpl(a, .{ .array = input }, &.{}, .{
         .config = &cfg,
         .api_key = "",
         .http = &http,
+        .tools = &.{},
         .emit = struct {
             fn e(chunk: []const u8, ud: ?*anyopaque) anyerror!void {
                 const list: *std.ArrayList([]const u8) = @ptrCast(@alignCast(ud.?));
@@ -77,10 +115,11 @@ test "echo: emits blocks, end_turn; honours cancellation" {
     try testing.expectEqual(@as(usize, 2), chunks.items.len);
 
     cancel = true;
-    const cancelled = try generateImpl(a, &.{"x"}, .{
+    const cancelled = try generateImpl(a, .{ .array = input }, &.{}, .{
         .config = &cfg,
         .api_key = "",
         .http = &http,
+        .tools = &.{},
         .emit = struct {
             fn e(_: []const u8, _: ?*anyopaque) anyerror!void {}
         }.e,

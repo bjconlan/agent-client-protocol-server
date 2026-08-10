@@ -6,11 +6,24 @@
 
 const std = @import("std");
 
+/// Role of a stored exchange.
+pub const Role = enum { user, assistant };
+
+/// A stored exchange for cross-prompt context (the ACP agent holds session
+/// context; the client sends only the new prompt).
+pub const HistoryMessage = struct {
+    role: Role,
+    text: []const u8,
+};
+
 /// An active session (schema `NewSessionResponse.sessionId` is a string id).
 /// Lives for the process; stored in `SessionStore` (arena-backed).
 pub const Session = struct {
     id: []const u8,
     cwd: []const u8,
+    /// Recent user prompts + assistant text (last ~20), appended by the
+    /// prompt worker. Strings are owned by the store's allocator.
+    history: std.ArrayList(HistoryMessage) = .empty,
 };
 
 /// In-memory session store keyed by session id. Keys/values are owned by the
@@ -50,6 +63,11 @@ pub const SessionStore = struct {
 
     pub fn get(self: *const SessionStore, id: []const u8) ?Session {
         return self.map.get(id);
+    }
+
+    /// Mutable session lookup — the worker appends history through this.
+    pub fn getPtr(self: *SessionStore, id: []const u8) ?*Session {
+        return self.map.getPtr(id);
     }
 };
 

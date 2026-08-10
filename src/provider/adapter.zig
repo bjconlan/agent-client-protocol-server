@@ -1,17 +1,17 @@
 //! Provider adapter interface.
 //!
 //! Isolates ACP protocol semantics from model provider backends. A provider
-//! turns prompt text blocks into streamed text chunks via `emit`, honoring
-//! `is_cancelled` between chunks. The caller (the prompt worker) serializes
-//! chunks as ACP `session/update` notifications.
-//!
-//! Push-based so real streaming providers (OpenAI SSE, F4) and the echo stub
-//! share one shape, and so cancellation can interrupt mid-stream.
+//! turns prebuilt input items (session history + current prompt) plus prior
+//! tool results into streamed text chunks (via `emit`), honoring
+//! `is_cancelled` between chunks, and returns any `function_call` tool calls
+//! the model requested. The caller (the prompt worker) executes tools
+//! agent-side and feeds results back on the next call.
 
 const std = @import("std");
 
 const config_mod = @import("../config.zig");
 const http_util = @import("../util/http.zig");
+const tools = @import("../tools/registry.zig");
 
 /// Streamed text chunk callback. Returning an error aborts generation.
 pub const EmitFn = *const fn (chunk: []const u8, userdata: ?*anyopaque) anyerror!void;
@@ -25,11 +25,28 @@ pub const Usage = struct {
     total_tokens: u64,
 };
 
-/// Generation result: ACP stop reason + optional usage.
+/// A tool call the model requested (OpenAI `function_call` output item).
+pub const ToolCall = struct {
+    /// Provider call id (echoed back in `ToolResult.call_id`).
+    id: []const u8,
+    name: []const u8,
+    /// JSON arguments string.
+    arguments: []const u8,
+};
+
+/// The result of executing a tool call, fed back to the provider.
+pub const ToolResult = struct {
+    call_id: []const u8,
+    output: []const u8,
+};
+
+/// Generation result: stop reason + usage + requested tool calls.
 pub const Result = struct {
     /// "end_turn", "cancelled", "max_tokens", …
     stop_reason: []const u8,
     usage: ?Usage,
+    /// Tool calls the model requested (empty → the turn is done).
+    tool_calls: []ToolCall,
 };
 
 /// Per-generation options.
@@ -39,6 +56,8 @@ pub const Options = struct {
     /// fail lazily.
     api_key: []const u8,
     http: *std.http.Client,
+    /// Tool definitions to advertise (provider `tools` param).
+    tools: []const tools.Tool,
     emit: EmitFn,
     is_cancelled: IsCancelledFn,
     userdata: ?*anyopaque,
@@ -48,7 +67,11 @@ pub const Options = struct {
 pub const Provider = struct {
     generate: *const fn (
         allocator: std.mem.Allocator,
-        text_blocks: []const []const u8,
+        /// Prebuilt input items (session history + current prompt), a
+        /// `std.json.Array` Value.
+        input: std.json.Value,
+        /// Prior tool results, appended as `function_call_output` items.
+        tool_results: []const ToolResult,
         options: Options,
     ) anyerror!Result,
 };

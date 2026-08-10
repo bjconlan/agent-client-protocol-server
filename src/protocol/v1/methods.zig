@@ -15,6 +15,10 @@ const types = @import("types.zig");
 const adapter = @import("../../provider/adapter.zig");
 const echo = @import("../../provider/echo.zig");
 const config_mod = @import("../../config.zig");
+const tools_registry = @import("../../tools/registry.zig");
+
+/// Max provider→tool iterations per prompt turn.
+const tool_iteration_cap = 8;
 
 /// Version of this registry's protocol.
 pub const protocol_version: u16 = 1;
@@ -26,6 +30,22 @@ pub const agent_version = "0.1.0";
 /// (e.g. a worker thread streaming a prompt); the dispatcher must not write a
 /// response.
 pub const DeferredResponse = error{DeferredResponse};
+
+/// A pending `session/request_permission` slot. Single-slot: at most one
+/// prompt (and thus one permission request) runs at a time. The worker sets
+/// the request and spins on `done`; the main loop routes the client's
+/// response into the slot. Permission persistence is client-side (the client
+/// owns session/workspace policy) — the server stays stateless on grants.
+pub const PendingPermission = struct {
+    mutex: std.atomic.Mutex = .unlocked,
+    /// Request id of the in-flight `session/request_permission` (worker
+    /// arena-owned, alive while the worker waits).
+    request_id: []const u8 = "",
+    done: bool = false,
+    granted: bool = false,
+    /// Next request id counter.
+    next_id: u64 = 1,
+};
 
 /// Server context threaded through handlers: session store, stdout writer
 /// (for streaming notifications), provider, and shared async state.
@@ -47,6 +67,8 @@ pub const Context = struct {
     worker_done: *std.atomic.Value(bool),
     /// The active prompt worker thread, joined at EOF.
     active_worker: ?std.Thread = null,
+    /// Single-slot pending permission request (worker ↔ main loop).
+    permission: *PendingPermission,
 };
 
 /// Errors a handler may return, mapped to JSON-RPC codes by the dispatcher:
@@ -236,6 +258,21 @@ fn sessionPrompt(
         ctx.process_allocator.destroy(worker_arena);
         return error.InternalError;
     };
+    // Arm the permission slot synchronously (main thread) BEFORE spawning, so
+    // the loop can route the client's response no matter how fast it arrives.
+    // The id is duped into the worker arena (outlives per-message resets).
+    const permission_id = std.fmt.allocPrint(wa, "p{d}", .{ctx.permission.next_id}) catch {
+        worker_arena.deinit();
+        ctx.process_allocator.destroy(worker_arena);
+        return error.InternalError;
+    };
+    ctx.permission.next_id += 1;
+    lockSpin(&ctx.permission.mutex);
+    ctx.permission.request_id = permission_id;
+    ctx.permission.done = false;
+    ctx.permission.granted = false;
+    ctx.permission.mutex.unlock();
+
     worker.* = .{
         .ctx = ctx,
         .arena = worker_arena,
@@ -249,6 +286,7 @@ fn sessionPrompt(
             ctx.process_allocator.destroy(worker_arena);
             return error.InternalError;
         },
+        .permission_id = permission_id,
         .id = copyRequestId(wa, id) catch {
             worker_arena.deinit();
             ctx.process_allocator.destroy(worker_arena);
@@ -305,15 +343,19 @@ const EmitUd = struct {
     streaming: bool = false,
 };
 
-/// Runs one prompt turn on a worker thread: streams provider chunks as
-/// `session/update` notifications (writer lock held per write), then writes
-/// the final response. Owns its arena.
+/// Runs one prompt turn on a worker thread: iterates the provider tool-call
+/// loop (streaming text chunks via `session/update`, reporting tool calls,
+/// requesting permission, executing agent-side), then writes the final
+/// response. Owns its arena.
 const PromptWorker = struct {
     ctx: *Context,
     arena: *std.heap.ArenaAllocator,
     text_blocks: []const []const u8,
     session_id: []const u8,
     id: json_rpc.RequestId,
+    /// Reserved permission request id — the pending slot is armed before any
+    /// provider call so the main loop can route an early response.
+    permission_id: []const u8,
 
     fn run(self: *PromptWorker) void {
         defer self.ctx.worker_done.store(true, .monotonic);
@@ -334,29 +376,222 @@ const PromptWorker = struct {
             return;
         };
 
-        const result = self.ctx.provider.generate(allocator, self.text_blocks, .{
-            .config = &self.ctx.config,
-            .api_key = api_key,
-            .http = self.ctx.http,
-            .emit = emitChunk,
-            .is_cancelled = isCancelled,
-            .userdata = &emit_ud,
-        });
+        var tool_results: std.ArrayList(adapter.ToolResult) = .empty;
+        var final_stop: []const u8 = "end_turn";
+        var final_usage: ?adapter.Usage = null;
 
-        if (result) |r| {
-            if (r.usage) |u| self.writeUsage(u);
-            self.writeResponse(stopReasonResult(allocator, r.stop_reason) catch {
+        for (0..tool_iteration_cap) |_| {
+            const input = self.buildInput(allocator) catch {
                 self.writeError(json_rpc.ErrorCode.internal_error, "Internal error");
                 return;
+            };
+
+            const result = self.ctx.provider.generate(allocator, input, tool_results.items, .{
+                .config = &self.ctx.config,
+                .api_key = api_key,
+                .http = self.ctx.http,
+                .tools = &tools_registry.registry,
+                .emit = emitChunk,
+                .is_cancelled = isCancelled,
+                .userdata = &emit_ud,
             });
-        } else |err| {
-            switch (err) {
-                error.Cancelled => self.writeResponse(stopReasonResult(allocator, "cancelled") catch return),
-                error.MissingApiKey => self.writeError(json_rpc.ErrorCode.internal_error, "Missing OPENAI_API_KEY"),
-                error.BadApiKey => self.writeError(json_rpc.ErrorCode.internal_error, "Provider authentication failed"),
-                error.RateLimited => self.writeError(json_rpc.ErrorCode.internal_error, "Provider rate limited"),
-                else => self.writeError(json_rpc.ErrorCode.internal_error, "Provider request failed"),
+
+            const r = result catch |err| switch (err) {
+                error.Cancelled => {
+                    self.writeResponse(stopReasonResult(allocator, "cancelled") catch return);
+                    return;
+                },
+                error.MissingApiKey => {
+                    self.writeError(json_rpc.ErrorCode.internal_error, "Missing OPENAI_API_KEY");
+                    return;
+                },
+                error.BadApiKey => {
+                    self.writeError(json_rpc.ErrorCode.internal_error, "Provider authentication failed");
+                    return;
+                },
+                error.RateLimited => {
+                    self.writeError(json_rpc.ErrorCode.internal_error, "Provider rate limited");
+                    return;
+                },
+                else => {
+                    self.writeError(json_rpc.ErrorCode.internal_error, "Provider request failed");
+                    return;
+                },
+            };
+
+            if (r.usage) |u| final_usage = u;
+            if (r.tool_calls.len == 0) {
+                final_stop = r.stop_reason;
+                break;
             }
+
+            // Execute each requested tool call (report, permission, run),
+            // then loop again with the results fed back.
+            for (r.tool_calls) |call| {
+                const output = self.runToolCall(allocator, call) catch {
+                    self.writeError(json_rpc.ErrorCode.internal_error, "Tool execution failed");
+                    return;
+                };
+                tool_results.append(allocator, .{ .call_id = call.id, .output = output }) catch {
+                    self.writeError(json_rpc.ErrorCode.internal_error, "Internal error");
+                    return;
+                };
+            }
+        }
+
+        self.appendHistory(allocator) catch {};
+
+        if (final_usage) |u| self.writeUsage(u);
+        self.writeResponse(stopReasonResult(allocator, final_stop) catch {
+            self.writeError(json_rpc.ErrorCode.internal_error, "Internal error");
+            return;
+        });
+    }
+
+    /// Build the provider input items: session history (user/assistant
+    /// messages) + this prompt's text blocks as a user message.
+    fn buildInput(self: *PromptWorker, allocator: std.mem.Allocator) !std.json.Value {
+        // The returned Value escapes this frame — no deinit (worker arena
+        // owns the array; the provider consumes it).
+        var input: std.json.Array = std.json.Array.init(allocator);
+
+        if (self.ctx.sessions.getPtr(self.session_id)) |session| {
+            for (session.history.items) |h| {
+                try appendMessage(allocator, &input, h.role, h.text);
+            }
+        }
+        for (self.text_blocks) |text| {
+            try appendMessage(allocator, &input, .user, text);
+        }
+        return .{ .array = input };
+    }
+
+    /// Execute one tool call: report pending, request permission, run
+    /// agent-side (ACP v1), report completion, return the result text.
+    fn runToolCall(self: *PromptWorker, allocator: std.mem.Allocator, call: adapter.ToolCall) ![]const u8 {
+        const tool = tools_registry.lookup(call.name) orelse
+            return allocator.dupe(u8, "ERROR: unknown tool");
+
+        self.reportToolCall(allocator, call, tool, "pending");
+
+        const granted = self.requestPermission(allocator, call, tool) catch false;
+        if (!granted) {
+            self.reportToolCall(allocator, call, tool, "failed");
+            return allocator.dupe(u8, "ERROR: permission denied");
+        }
+
+        self.reportToolCall(allocator, call, tool, "in_progress");
+        const result = tool.execute(allocator, call.arguments) catch |err| blk: {
+            const msg = std.fmt.allocPrint(allocator, "ERROR: {s}", .{@errorName(err)}) catch break :blk "ERROR";
+            break :blk msg;
+        };
+        self.reportToolResult(allocator, call, result);
+        return result;
+    }
+
+    /// Send `session/request_permission` and wait for the client's response
+    /// (routed into the single-slot `PendingPermission` by the main loop).
+    /// Timeout (~10s) or cancellation → denied.
+    fn requestPermission(
+        self: *PromptWorker,
+        allocator: std.mem.Allocator,
+        call: adapter.ToolCall,
+        tool: *const tools_registry.Tool,
+    ) !bool {
+        const req_id = self.permission_id;
+
+        // params: {sessionId, toolCall, options: []}
+        var tool_call: std.json.ObjectMap = .empty;
+        try tool_call.put(allocator, "toolCallId", .{ .string = call.id });
+        try tool_call.put(allocator, "title", .{ .string = tool.name });
+        try tool_call.put(allocator, "kind", .{ .string = tool.kind });
+        try tool_call.put(allocator, "status", .{ .string = "pending" });
+        try tool_call.put(allocator, "rawInput", .{ .string = call.arguments });
+
+        var params: std.json.ObjectMap = .empty;
+        try params.put(allocator, "sessionId", .{ .string = self.session_id });
+        try params.put(allocator, "toolCall", .{ .object = tool_call });
+        try params.put(allocator, "options", .{ .array = std.json.Array.init(allocator) });
+
+        self.writeLocked(json_rpc.serializeRequest(allocator, self.ctx.writer, .{ .string = req_id }, "session/request_permission", .{ .object = params }));
+
+        var waited: u32 = 0;
+        while (true) {
+            lockSpin(&self.ctx.permission.mutex);
+            const done = self.ctx.permission.done;
+            const granted = self.ctx.permission.granted;
+            self.ctx.permission.mutex.unlock();
+            if (done) return granted;
+            if (self.ctx.cancel_requested.load(.monotonic)) return false;
+            const ts = std.posix.timespec{ .sec = 0, .nsec = 1_000_000 };
+            _ = std.os.linux.nanosleep(&ts, null);
+            waited += 1;
+            if (waited > 10_000) {
+                std.log.warn("session/request_permission: timeout waiting for response", .{});
+                return false;
+            }
+        }
+    }
+
+    /// Emit a `tool_call` / `tool_call_update` session/update notification.
+    fn reportToolCall(
+        self: *PromptWorker,
+        allocator: std.mem.Allocator,
+        call: adapter.ToolCall,
+        tool: *const tools_registry.Tool,
+        status: []const u8,
+    ) void {
+        var update: std.json.ObjectMap = .empty;
+        defer update.deinit(allocator);
+        update.put(allocator, "sessionUpdate", .{ .string = if (std.mem.eql(u8, status, "pending")) "tool_call" else "tool_call_update" }) catch return;
+        update.put(allocator, "toolCallId", .{ .string = call.id }) catch return;
+        update.put(allocator, "title", .{ .string = tool.name }) catch return;
+        update.put(allocator, "kind", .{ .string = tool.kind }) catch return;
+        update.put(allocator, "status", .{ .string = status }) catch return;
+        update.put(allocator, "rawInput", .{ .string = call.arguments }) catch return;
+
+        var params: std.json.ObjectMap = .empty;
+        defer params.deinit(allocator);
+        params.put(allocator, "sessionId", .{ .string = self.session_id }) catch return;
+        params.put(allocator, "update", .{ .object = update }) catch return;
+
+        self.writeLocked(json_rpc.serializeNotification(allocator, self.ctx.writer, "session/update", .{ .object = params }));
+    }
+
+    /// Emit a `tool_call_update` with the completed status + raw output.
+    fn reportToolResult(
+        self: *PromptWorker,
+        allocator: std.mem.Allocator,
+        call: adapter.ToolCall,
+        result: []const u8,
+    ) void {
+        var update: std.json.ObjectMap = .empty;
+        defer update.deinit(allocator);
+        update.put(allocator, "sessionUpdate", .{ .string = "tool_call_update" }) catch return;
+        update.put(allocator, "toolCallId", .{ .string = call.id }) catch return;
+        update.put(allocator, "status", .{ .string = "completed" }) catch return;
+        update.put(allocator, "rawOutput", .{ .string = result }) catch return;
+
+        var params: std.json.ObjectMap = .empty;
+        defer params.deinit(allocator);
+        params.put(allocator, "sessionId", .{ .string = self.session_id }) catch return;
+        params.put(allocator, "update", .{ .object = update }) catch return;
+
+        self.writeLocked(json_rpc.serializeNotification(allocator, self.ctx.writer, "session/update", .{ .object = params }));
+    }
+
+    /// Append this turn to the session history (user prompt + assistant
+    /// text; tool exchanges live within the turn). Keeps the last ~20.
+    fn appendHistory(self: *PromptWorker, allocator: std.mem.Allocator) !void {
+        const session = self.ctx.sessions.getPtr(self.session_id) orelse return;
+        for (self.text_blocks) |text| {
+            try session.history.append(self.ctx.process_allocator, .{ .role = .user, .text = try self.ctx.process_allocator.dupe(u8, text) });
+        }
+        // Assistant text is not tracked separately yet (the provider streams
+        // it); the history holds user prompts for MVP context.
+        _ = allocator;
+        if (session.history.items.len > 40) {
+            session.history.replaceRange(self.ctx.process_allocator, 0, session.history.items.len - 20, &.{}) catch {};
         }
     }
 
@@ -399,6 +634,27 @@ const PromptWorker = struct {
         self.ctx.writer.flush() catch return;
     }
 };
+
+/// Append a message item (user/assistant) to the provider input array.
+fn appendMessage(
+    allocator: std.mem.Allocator,
+    input: *std.json.Array,
+    role: types.Role,
+    text: []const u8,
+) !void {
+    // content escapes into the message Value — no deinit (arena-owned).
+    var content: std.json.Array = std.json.Array.init(allocator);
+    var text_item: std.json.ObjectMap = .empty;
+    try text_item.put(allocator, "type", .{ .string = if (role == .user) "input_text" else "output_text" });
+    try text_item.put(allocator, "text", .{ .string = text });
+    try content.append(.{ .object = text_item });
+
+    var msg: std.json.ObjectMap = .empty;
+    try msg.put(allocator, "type", .{ .string = "message" });
+    try msg.put(allocator, "role", .{ .string = if (role == .user) "user" else "assistant" });
+    try msg.put(allocator, "content", .{ .array = content });
+    try input.append(.{ .object = msg });
+}
 
 fn emitChunk(chunk: []const u8, userdata: ?*anyopaque) anyerror!void {
     const ud: *EmitUd = @ptrCast(@alignCast(userdata.?));
@@ -490,6 +746,8 @@ fn testContext(a: std.mem.Allocator, writer: *Io.Writer) !*Context {
     cancel.* = std.atomic.Value(bool).init(false);
     const worker_done = try a.create(std.atomic.Value(bool));
     worker_done.* = std.atomic.Value(bool).init(false);
+    const permission = try a.create(PendingPermission);
+    permission.* = .{};
     const http = try a.create(std.http.Client);
     http.* = undefined;
     const ctx = try a.create(Context);
@@ -508,6 +766,7 @@ fn testContext(a: std.mem.Allocator, writer: *Io.Writer) !*Context {
             .effort = "high",
         },
         .process_allocator = a,
+        .permission = permission,
     };
     return ctx;
 }
@@ -664,4 +923,48 @@ test "session/cancel: unknown session ignored" {
         break :blk m;
     } });
     try testing.expect(!ctx.cancel_requested.load(.monotonic));
+}
+
+test "session history: buildInput includes history + current prompt" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: Io.Writer.Allocating = .init(a);
+    const ctx = try testContext(a, &out.writer);
+
+    _ = try sessionNew(ctx, a, .{ .int = 1 }, .{ .object = blk: {
+        var m: std.json.ObjectMap = .empty;
+        try m.put(a, "cwd", .{ .string = "/tmp" });
+        break :blk m;
+    } });
+
+    // simulate a completed turn: history has the first user prompt
+    const session = ctx.sessions.getPtr("1").?;
+    try session.history.append(ctx.process_allocator, .{ .role = .user, .text = try ctx.process_allocator.dupe(u8, "first question") });
+
+    // worker for a second prompt
+    var worker_arena = std.heap.ArenaAllocator.init(a);
+    defer worker_arena.deinit();
+    const wa = worker_arena.allocator();
+    const worker = try wa.create(PromptWorker);
+    worker.* = .{
+        .ctx = ctx,
+        .arena = &worker_arena,
+        .text_blocks = try dupStrings(wa, &.{"second question"}),
+        .session_id = try wa.dupe(u8, "1"),
+        .id = .{ .int = 2 },
+        .permission_id = "",
+    };
+
+    const input = try worker.buildInput(wa);
+    const arr = switch (input) {
+        .array => |arr_| arr_,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expectEqual(@as(usize, 2), arr.items.len);
+    // item 0 = history (user, "first question"); item 1 = current prompt
+    const text0 = arr.items[0].object.get("content").?.array.items[0].object.get("text").?.string;
+    const text1 = arr.items[1].object.get("content").?.array.items[0].object.get("text").?.string;
+    try testing.expectEqualStrings("first question", text0);
+    try testing.expectEqualStrings("second question", text1);
 }

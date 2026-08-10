@@ -4,6 +4,10 @@ const std = @import("std");
 
 pub const config = @import("config.zig");
 
+pub const tools = struct {
+    pub const registry = @import("tools/registry.zig");
+};
+
 pub const server = @import("server.zig");
 
 pub const protocol = struct {
@@ -46,4 +50,5 @@ test {
     std.testing.refAllDecls(util.http);
     std.testing.refAllDecls(util.mock_http);
     std.testing.refAllDecls(config);
+    std.testing.refAllDecls(tools.registry);
 }

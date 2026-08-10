@@ -14,6 +14,7 @@ const Io = std.Io;
 const http_util = @import("../util/http.zig");
 const config_mod = @import("../config.zig");
 const adapter = @import("adapter.zig");
+const tools = @import("../tools/registry.zig");
 
 const Options = adapter.Options;
 const Result = adapter.Result;
@@ -21,13 +22,15 @@ const Result = adapter.Result;
 pub const GenerateError = adapter.GenerateError;
 
 /// Run one generation: POST /responses, stream SSE, emit text chunks via
-/// `options.emit`. Checks `options.is_cancelled` between SSE events.
+/// `options.emit`. Checks `options.is_cancelled` between SSE events and
+/// collects `function_call` tool calls from the stream.
 pub fn generate(
     allocator: std.mem.Allocator,
-    text_blocks: []const []const u8,
+    input: std.json.Value,
+    tool_results: []const adapter.ToolResult,
     options: Options,
 ) GenerateError!Result {
-    const body = try buildBody(allocator, options.config, text_blocks);
+    const body = try buildBody(allocator, options.config, input, tool_results, options.tools);
     defer allocator.free(body);
 
     const url = try http_util.url(allocator, options.config.base_url, "/responses");
@@ -43,25 +46,43 @@ pub fn generate(
 fn buildBody(
     allocator: std.mem.Allocator,
     config: *const config_mod.Config,
-    text_blocks: []const []const u8,
+    input_value: std.json.Value,
+    tool_results: []const adapter.ToolResult,
+    tools_defs: []const tools.Tool,
 ) ![]u8 {
-    var input: std.json.Array = std.json.Array.init(allocator);
+    // input = passed items (history + current prompt) + function_call_output
+    // items for prior tool results.
+    var input = switch (input_value) {
+        .array => |arr| arr,
+        else => std.json.Array.init(allocator),
+    };
     defer input.deinit();
-
-    var content: std.json.Array = std.json.Array.init(allocator);
-    defer content.deinit();
-    for (text_blocks) |text| {
+    for (tool_results) |tr| {
         var item: std.json.ObjectMap = .empty;
-        try item.put(allocator, "type", .{ .string = "input_text" });
-        try item.put(allocator, "text", .{ .string = text });
-        try content.append(.{ .object = item });
+        try item.put(allocator, "type", .{ .string = "function_call_output" });
+        try item.put(allocator, "call_id", .{ .string = tr.call_id });
+        try item.put(allocator, "output", .{ .string = tr.output });
+        try input.append(.{ .object = item });
     }
 
-    var message: std.json.ObjectMap = .empty;
-    try message.put(allocator, "type", .{ .string = "message" });
-    try message.put(allocator, "role", .{ .string = "user" });
-    try message.put(allocator, "content", .{ .array = content });
-    try input.append(.{ .object = message });
+    // tools param from the registry definitions.
+    var tools_arr: std.json.Array = std.json.Array.init(allocator);
+    defer tools_arr.deinit();
+    for (tools_defs) |tool| {
+        var scanner = std.json.Scanner.initCompleteInput(allocator, tool.parameters);
+        const params = std.json.Value.jsonParse(allocator, &scanner, .{
+            .allocate = .alloc_always,
+            .max_value_len = tool.parameters.len,
+        }) catch continue;
+        var fn_obj: std.json.ObjectMap = .empty;
+        try fn_obj.put(allocator, "name", .{ .string = tool.name });
+        try fn_obj.put(allocator, "description", .{ .string = tool.description });
+        try fn_obj.put(allocator, "parameters", params);
+        var tool_obj: std.json.ObjectMap = .empty;
+        try tool_obj.put(allocator, "type", .{ .string = "function" });
+        try tool_obj.put(allocator, "function", .{ .object = fn_obj });
+        try tools_arr.append(.{ .object = tool_obj });
+    }
 
     var reasoning: std.json.ObjectMap = .empty;
     try reasoning.put(allocator, "effort", .{ .string = config.effort });
@@ -73,6 +94,7 @@ fn buildBody(
     errdefer root.deinit(allocator);
     try root.put(allocator, "model", .{ .string = config.model });
     try root.put(allocator, "input", .{ .array = input });
+    try root.put(allocator, "tools", .{ .array = tools_arr });
     try root.put(allocator, "reasoning", .{ .object = reasoning });
     try root.put(allocator, "stream", .{ .bool = true });
     try root.put(allocator, "stream_options", .{ .object = stream_options });
@@ -91,9 +113,12 @@ fn parseStream(
 ) GenerateError!Result {
     var usage: ?adapter.Usage = null;
     var saw_text: bool = false;
+    var tool_calls: std.ArrayList(adapter.ToolCall) = .empty;
+    var current_args: std.ArrayList(u8) = .empty;
+    var in_tool_call = false;
 
     while (true) {
-        if (options.is_cancelled(options.userdata)) return .{ .stop_reason = "cancelled", .usage = usage };
+        if (options.is_cancelled(options.userdata)) return .{ .stop_reason = "cancelled", .usage = usage, .tool_calls = tool_calls.items };
 
         const line = reader.takeDelimiter('\n') catch |err| switch (err) {
             error.StreamTooLong => return error.GenerateFailed,
@@ -135,20 +160,59 @@ fn parseStream(
                 },
                 else => {},
             };
+        } else if (std.mem.eql(u8, event_type, "response.function_call_arguments.delta")) {
+            if (obj.get("delta")) |d| switch (d) {
+                .string => |text| {
+                    in_tool_call = true;
+                    try current_args.appendSlice(allocator, text);
+                },
+                else => {},
+            };
+        } else if (std.mem.eql(u8, event_type, "response.output_item.done")) {
+            const item = obj.get("item") orelse continue;
+            const io = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const item_type = switch (io.get("type") orelse continue) {
+                .string => |str| str,
+                else => continue,
+            };
+            if (!std.mem.eql(u8, item_type, "function_call")) continue;
+            const call_id = switch (io.get("call_id") orelse continue) {
+                .string => |str| str,
+                else => continue,
+            };
+            const name = switch (io.get("name") orelse continue) {
+                .string => |str| str,
+                else => continue,
+            };
+            const arguments = if (in_tool_call)
+                try current_args.toOwnedSlice(allocator)
+            else switch (io.get("arguments") orelse std.json.Value{ .string = "" }) {
+                .string => |str| try allocator.dupe(u8, str),
+                else => "",
+            };
+            in_tool_call = false;
+            try tool_calls.append(allocator, .{
+                .id = try allocator.dupe(u8, call_id),
+                .name = try allocator.dupe(u8, name),
+                .arguments = arguments,
+            });
         } else if (std.mem.eql(u8, event_type, "response.completed")) {
             if (obj.get("response")) |resp| {
                 usage = extractUsage(resp);
             }
-            return .{ .stop_reason = if (saw_text) "end_turn" else "end_turn", .usage = usage };
+            return .{ .stop_reason = "end_turn", .usage = usage, .tool_calls = tool_calls.items };
         } else if (std.mem.eql(u8, event_type, "response.incomplete")) {
-            return .{ .stop_reason = "max_tokens", .usage = usage };
+            return .{ .stop_reason = "max_tokens", .usage = usage, .tool_calls = tool_calls.items };
         } else if (std.mem.eql(u8, event_type, "response.failed")) {
             return error.GenerateFailed;
         }
         // other events (created, in_progress, output_item.*, ...) ignored
     }
 
-    return .{ .stop_reason = "end_turn", .usage = usage };
+    return .{ .stop_reason = "end_turn", .usage = usage, .tool_calls = tool_calls.items };
 }
 
 /// Extract usage from the response object (final event with
@@ -212,6 +276,7 @@ test "parseStream: delta events emit chunks, completed returns end_turn" {
     const result = try parseStream(a, &fixed, .{
         .config = &cfg,
         .http = &http,
+        .tools = &.{},
         .api_key = "k",
         .emit = emit_collect.collect,
         .is_cancelled = struct {
@@ -250,6 +315,7 @@ test "parseStream: cancelled mid-stream returns cancelled" {
     const result = try parseStream(a, &fixed, .{
         .config = &cfg,
         .http = &http,
+        .tools = &.{},
         .api_key = "k",
         .emit = emit_collect.collect,
         .is_cancelled = struct {
@@ -277,6 +343,7 @@ test "parseStream: incomplete returns max_tokens, failed returns error" {
     const result = try parseStream(a, &fixed1, .{
         .config = &cfg,
         .http = &http,
+        .tools = &.{},
         .api_key = "k",
         .emit = emit_collect.collect,
         .is_cancelled = struct {
@@ -293,6 +360,7 @@ test "parseStream: incomplete returns max_tokens, failed returns error" {
     try testing.expectError(error.GenerateFailed, parseStream(a, &fixed2, .{
         .config = &cfg,
         .http = &http,
+        .tools = &.{},
         .api_key = "k",
         .emit = emit_collect.collect,
         .is_cancelled = struct {
@@ -310,7 +378,19 @@ test "buildBody: contains model, reasoning.effort, stream flags" {
     const a = arena.allocator();
 
     var cfg = config_mod.Config{ .api_key = null, .base_url = "http://x", .model = "deepseek-v4-flash", .effort = "high" };
-    const body = try buildBody(a, &cfg, &.{"hi"});
+    var input: std.json.Array = std.json.Array.init(a);
+    var content: std.json.Array = std.json.Array.init(a);
+    var text_item: std.json.ObjectMap = .empty;
+    try text_item.put(a, "type", .{ .string = "input_text" });
+    try text_item.put(a, "text", .{ .string = "hi" });
+    try content.append(.{ .object = text_item });
+    var msg: std.json.ObjectMap = .empty;
+    try msg.put(a, "type", .{ .string = "message" });
+    try msg.put(a, "role", .{ .string = "user" });
+    try msg.put(a, "content", .{ .array = content });
+    try input.append(.{ .object = msg });
+
+    const body = try buildBody(a, &cfg, .{ .array = input }, &.{}, &.{});
     defer a.free(body);
 
     var scanner = std.json.Scanner.initCompleteInput(a, body);
@@ -326,10 +406,10 @@ test "buildBody: contains model, reasoning.effort, stream flags" {
     try testing.expectEqualStrings("high", obj.get("reasoning").?.object.get("effort").?.string);
     try testing.expectEqual(true, obj.get("stream").?.bool);
     try testing.expectEqual(true, obj.get("stream_options").?.object.get("include_usage").?.bool);
-    const input = obj.get("input").?.array;
-    try testing.expectEqual(@as(usize, 1), input.items.len);
-    const content = input.items[0].object.get("content").?.array;
-    try testing.expectEqualStrings("hi", content.items[0].object.get("text").?.string);
+    const input_items = obj.get("input").?.array;
+    try testing.expectEqual(@as(usize, 1), input_items.items.len);
+    const blocks = input_items.items[0].object.get("content").?.array;
+    try testing.expectEqualStrings("hi", blocks.items[0].object.get("text").?.string);
 }
 
 test "generate: full round-trip against a mock /responses endpoint" {
@@ -360,10 +440,11 @@ test "generate: full round-trip against a mock /responses endpoint" {
     const chunks = try a.create(std.ArrayList([]const u8));
     chunks.* = .empty;
 
-    const result = try generate(a, &.{"hello"}, .{
+    const result = try generate(a, .{ .array = std.json.Array.init(a) }, &.{}, .{
         .config = &cfg,
         .api_key = "sk-test",
         .http = &http,
+        .tools = &.{},
         .emit = struct {
             fn e(chunk: []const u8, ud: ?*anyopaque) anyerror!void {
                 const list: *std.ArrayList([]const u8) = @ptrCast(@alignCast(ud.?));
@@ -386,4 +467,73 @@ test "generate: full round-trip against a mock /responses endpoint" {
     try testing.expectEqual(@as(u64, 7), result.usage.?.total_tokens);
     // the request reached the mock as a POST to /responses
     try testing.expect(std.mem.startsWith(u8, mock.request.items, "POST /responses"));
+}
+
+test "parseStream: function_call args deltas collect a ToolCall" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const stream =
+        \\data: {"type":"response.function_call_arguments.delta","delta":"{\"x\":"}
+        \\data: {"type":"response.function_call_arguments.delta","delta":"1}"}
+        \\data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_9","name":"echo","arguments":""}}
+        \\data: {"type":"response.completed","response":{"id":"r1"}}
+        \\
+    ;
+    var fixed = Io.Reader.fixed(stream);
+
+    var cfg = config_mod.Config{ .api_key = null, .base_url = "http://x", .model = "m", .effort = "high" };
+    var threaded = Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    var http: std.http.Client = .{ .allocator = a, .io = threaded.io() };
+
+    const result = try parseStream(a, &fixed, .{
+        .config = &cfg,
+        .http = &http,
+        .tools = &.{},
+        .api_key = "k",
+        .emit = struct {
+            fn e(_: []const u8, _: ?*anyopaque) anyerror!void {}
+        }.e,
+        .is_cancelled = struct {
+            fn c(_: ?*anyopaque) bool {
+                return false;
+            }
+        }.c,
+        .userdata = null,
+    });
+    try testing.expectEqual(@as(usize, 1), result.tool_calls.len);
+    try testing.expectEqualStrings("call_9", result.tool_calls[0].id);
+    try testing.expectEqualStrings("echo", result.tool_calls[0].name);
+    try testing.expectEqualStrings("{\"x\":1}", result.tool_calls[0].arguments);
+}
+
+test "buildBody: tools array includes registry definitions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var cfg = config_mod.Config{ .api_key = null, .base_url = "http://x", .model = "m", .effort = "high" };
+    const tools_registry = @import("../tools/registry.zig");
+
+    const body = try buildBody(a, &cfg, .{ .array = std.json.Array.init(a) }, &.{}, &tools_registry.registry);
+    defer a.free(body);
+
+    var scanner = std.json.Scanner.initCompleteInput(a, body);
+    const value = std.json.Value.jsonParse(a, &scanner, .{
+        .allocate = .alloc_always,
+        .max_value_len = body.len,
+    }) catch return error.TestUnexpectedResult;
+    const obj = switch (value) {
+        .object => |o| o,
+        else => return error.TestUnexpectedResult,
+    };
+    const tools_arr = obj.get("tools").?.array;
+    try testing.expect(tools_arr.items.len >= 2);
+    const first = tools_arr.items[0].object;
+    try testing.expectEqualStrings("function", first.get("type").?.string);
+    const fn_obj = first.get("function").?.object;
+    try testing.expectEqualStrings("get_current_time", fn_obj.get("name").?.string);
+    try testing.expect(fn_obj.get("parameters") != null);
 }

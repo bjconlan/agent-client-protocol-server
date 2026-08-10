@@ -54,6 +54,16 @@ Format:
 **Options considered:** system package (needs sudo), manual tarball, mise.
 **Outcome:** **mise** — user-level, no sudo, `mise.toml` pins `zig@0.16.0`.
 
+### 2025-08-10 — F5: tool-call round-trip
+
+**Context:** F5 planning; user confirmed scope and answered the permission-model question: **permission persistence is client-side** (session/workspace-bound preferences are the client's policy — e.g. fossil maps bot policy → auto-grant).
+**Outcome:**
+- **Tool registry:** server-side, agent-executed (ACP v1 model); data-driven `{name, description, parameters, kind, execute}`; MVP ships `get_current_time`
+- **Permission:** server presents `session/request_permission` with options (`allow_once`/`allow_always`/`reject_once`) per call; honors response — schema `outcome` (selected/cancelled) and the fossil client's `{granted: bool}`; server stays stateless on grants
+- **Multi-call loop:** worker iterates generate → execute → append `function_call_output` → repeat (cap 8); tool reporting via `session/update` `tool_call`/`tool_call_update`
+- **Session history:** in-memory per-session accumulation (~20 messages) so the agent holds context (ACP model — the client sends only the new prompt)
+- **HTTP timeout:** provider request timeout included (F4 follow-up)
+
 ### 2025-08-10 — F4: OpenAI Responses adapter + cancellation architecture
 
 **Context:** F4 planning; user confirmed config vars incl. model + effort (target `deepseek-v4-flash`, `high`), lazy-fail on missing key, startup auth/health validation.

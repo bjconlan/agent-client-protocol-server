@@ -32,6 +32,7 @@ pub fn run(
     writer: *Io.Writer,
     gpa: std.mem.Allocator,
     config: config_mod.Config,
+    provider: @import("provider/adapter.zig").Provider,
 ) !void {
     var msg_arena = std.heap.ArenaAllocator.init(gpa);
     defer msg_arena.deinit();
@@ -43,6 +44,7 @@ pub fn run(
     var writer_lock: std.atomic.Mutex = .unlocked;
     var cancel_requested = std.atomic.Value(bool).init(false);
     var worker_done = std.atomic.Value(bool).init(false);
+    var permission = methods_v1.PendingPermission{};
     var http_client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer http_client.deinit();
 
@@ -50,13 +52,15 @@ pub fn run(
         .sessions = &session_store,
         .writer = writer,
         .writer_lock = &writer_lock,
-        .provider = .{ .generate = echo.generate },
+        .provider = provider,
         .cancel_requested = &cancel_requested,
         .worker_done = &worker_done,
         .http = &http_client,
         .config = config,
         .process_allocator = gpa,
+        .permission = &permission,
     };
+    _ = echo;
 
     while (true) {
         _ = msg_arena.reset(.retain_capacity);
@@ -136,8 +140,63 @@ fn dispatch(
                 };
             }
         },
-        .response, .error_response => {},
+        .response => |resp| {
+            // Route the client's response to the pending permission request
+            // (the prompt worker waits on the slot).
+            if (!ctx.permission.done and ctx.permission.request_id.len > 0 and
+                idMatches(resp.id, ctx.permission.request_id))
+            {
+                methods_v1.lockSpin(&ctx.permission.mutex);
+                ctx.permission.granted = parsePermissionGranted(resp.result);
+                ctx.permission.done = true;
+                ctx.permission.mutex.unlock();
+            }
+        },
+        .error_response => |resp| {
+            if (!ctx.permission.done and ctx.permission.request_id.len > 0 and
+                idMatches(resp.id, ctx.permission.request_id))
+            {
+                methods_v1.lockSpin(&ctx.permission.mutex);
+                ctx.permission.granted = false;
+                ctx.permission.done = true;
+                ctx.permission.mutex.unlock();
+            }
+        },
     }
+}
+
+/// Does a JSON-RPC id equal a plain string id? (The worker uses string ids
+/// like "p1"; the client echoes them verbatim.)
+fn idMatches(id: json_rpc.RequestId, expected: []const u8) bool {
+    return switch (id) {
+        .string => |s| std.mem.eql(u8, s, expected),
+        else => false,
+    };
+}
+
+/// Parse a permission response result: fossil client `{granted: bool}` or
+/// schema `{outcome: ...}`.
+fn parsePermissionGranted(result: std.json.Value) bool {
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return false,
+    };
+    if (obj.get("granted")) |g| switch (g) {
+        .bool => |b| return b,
+        else => {},
+    };
+    if (obj.get("outcome")) |o| switch (o) {
+        .object => |oo| {
+            const out = oo.get("outcome") orelse return false;
+            if (out != .string) return false;
+            if (std.mem.eql(u8, out.string, "cancelled")) return false;
+            // "selected" → granted (option id would tell allow vs reject;
+            // MVP treats selection as allow — see decisions.md)
+            return true;
+        },
+        else => {},
+    };
+    return false;
 }
 
 /// Map handler errors to JSON-RPC codes: InvalidParams → -32602,
@@ -191,7 +250,7 @@ fn expectRun(input: []const u8, expected: []const u8) !void {
         .model = "test-model",
         .effort = "high",
     };
-    try run(io, &fixed_reader, &out.writer, a, cfg);
+    try run(io, &fixed_reader, &out.writer, a, cfg, .{ .generate = echo.generate });
     try testing.expectEqualStrings(expected, out.written());
 }
 
@@ -273,4 +332,66 @@ test "fossil client flow: initialize → session/new → session/prompt (streame
     ;
     // Zig multiline literals omit the final newline; the loop emits one per line.
     try expectRun(input, expected ++ "\n");
+}
+
+/// Test provider: returns one tool call on the first generate, then text.
+/// The called tool name is read from `fake_call_name` (a plain fn — no self).
+var fake_call_name: []const u8 = "get_current_time";
+
+fn fakeToolGenerate(
+    allocator: std.mem.Allocator,
+    input: std.json.Value,
+    tool_results: []const @import("provider/adapter.zig").ToolResult,
+    options: @import("provider/adapter.zig").Options,
+) anyerror!@import("provider/adapter.zig").Result {
+    _ = input;
+    if (tool_results.len == 0) {
+        const calls = try allocator.alloc(@import("provider/adapter.zig").ToolCall, 1);
+        calls[0] = .{ .id = "call_1", .name = fake_call_name, .arguments = "{\"x\":1}" };
+        return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = calls };
+    }
+    try options.emit("it is now done", options.userdata);
+    return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{} };
+}
+
+test "tool-call round-trip: echo tool, permission granted, result fed back" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    fake_call_name = "echo";
+    defer fake_call_name = "get_current_time";
+
+    const input =
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+        \\{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
+        \\{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"1","prompt":[{"type":"text","text":"hello"}]}}
+        \\{"jsonrpc":"2.0","id":"p1","result":{"granted":true}}
+    ;
+    var fixed_reader = Io.Reader.fixed(input);
+    var out: Io.Writer.Allocating = .init(a);
+    const cfg = @import("config.zig").Config{
+        .api_key = "test-key",
+        .base_url = "http://127.0.0.1:1",
+        .model = "test-model",
+        .effort = "high",
+    };
+
+    var threaded = Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .generate = fakeToolGenerate });
+    const actual = out.written();
+
+    // tool_call (pending) notification
+    try testing.expect(std.mem.indexOf(u8, actual, "\"sessionUpdate\":\"tool_call\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"rawInput\":\"{\\\"x\\\":1}\"") != null);
+    // request_permission sent with id p1
+    try testing.expect(std.mem.indexOf(u8, actual, "\"method\":\"session/request_permission\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"id\":\"p1\"") != null);
+    // echo result fed back, completed update (deterministic)
+    try testing.expect(std.mem.indexOf(u8, actual, "\"status\":\"completed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"rawOutput\":\"{\\\"x\\\":1}\"") != null);
+    // final answer + response
+    try testing.expect(std.mem.indexOf(u8, actual, "\"text\":\"it is now done\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"stopReason\":\"end_turn\"") != null);
 }
