@@ -223,4 +223,4 @@ sequenceDiagram
 - backlog: F5 marked done on merge
 
 ## Status
-- **Stage:** 3 (Review) — see Status above for the implementation checkpoint
+- **Stage:** 4 (Complete — merged to main as `5d10f34`) — see Status above for the implementation checkpoint
