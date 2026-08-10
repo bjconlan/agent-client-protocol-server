@@ -30,6 +30,14 @@ Project-specific terms and definitions. Add entries as concepts become load-bear
 
 - **OpenAI-compatible endpoint** — any provider exposing OpenAI-shaped APIs (e.g. DeepSeek at `https://api.deepseek.com`, `/v1` alias). Configured via `OPENAI_URL`; DeepSeek also documents a Responses API.
 
+## Zig 0.16 stdlib idioms (learned during F1)
+
+- `std.json.Value.jsonParse(allocator, &scanner, .{ .allocate = .alloc_always, .max_value_len = line.len })` with `std.json.Scanner.initCompleteInput(allocator, slice)` parses a dynamic value; pass `.max_value_len` explicitly (jsonParse unwraps it)
+- **Union field access is non-optional** in 0.16 — `value.object orelse ...` is a compile error; use `switch (value) { .object => |o| o, else => ... }`
+- `std.json.Stringify.value(x, .{}, writer)` where `x` must be an explicit `std.json.Value{...}` — an anonymous `.{ .object = obj }` literal is inferred as a struct and fails to stringify (iterates the map's internals, hits `[*]u8`)
+- `std.Io.Reader.takeDelimiter('\n')` returns `!?[]u8` (null on EOF; slice is borrowed from the reader's buffer, valid until the next read); `error.StreamTooLong` when the line exceeds the reader buffer; `discardDelimiterInclusive` consumes the oversized line
+- `std.json.ObjectMap` / `std.json.Array` are managed — `obj.put(allocator, key, value)`, `obj.get(key)` (allocator-free), `obj.deinit(allocator)`
+
 ## Tooling
 
 - **Zig build system** — `build.zig` + `build.zig.zon`; `zig build`, `zig build test`, `zig fetch` for dependencies.

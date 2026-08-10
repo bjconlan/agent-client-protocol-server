@@ -46,8 +46,19 @@ config file, minimal env vars. See `AGENTS.md` for workflow conventions and
 
 ```sh
 zig build          # compiles to zig-out/bin/agent_client_protocol
-zig build run      # runs the binary (prints placeholder banner until the server transport lands)
 ```
+
+The binary is an ACP server: it reads newline-delimited JSON-RPC 2.0 messages
+from stdin and writes responses/notifications to stdout. It waits for a client
+connection — stdin EOF (client closing the pipe) terminates it cleanly.
+
+```sh
+# e.g. pipe a request in; it answers and waits for more input
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ./zig-out/bin/agent_client_protocol
+```
+
+`zig build run` does the same but with the terminal attached to stdin — exit
+with Ctrl-D (EOF).
 
 ## Testing
 

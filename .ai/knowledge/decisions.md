@@ -54,6 +54,20 @@ Format:
 **Options considered:** system package (needs sudo), manual tarball, mise.
 **Outcome:** **mise** — user-level, no sudo, `mise.toml` pins `zig@0.16.0`.
 
+### 2025-08-10 — JSON-RPC transport conventions (F1)
+
+**Context:** F1 planning; grounded in ACP v1 schema and the fossil client contract (`~/Downloads/fossil-linux-x64-2.28/fossil-agent.tcl`, read-only).
+**Outcome:**
+- **Framing:** newline-delimited JSON over stdin/stdout; `"jsonrpc":"2.0"` required on every message; empty lines are keepalives (skipped)
+- **RequestId:** union(null | int64 | string), echoed **verbatim** — client correlates with string equality (`ne`)
+- **Errors:** standard JSON-RPC codes (-32700/-32600/-32601/-32602/-32603) + `-32800` request-cancelled (client convention); ACP-specific codes in -32000..-32099 enumerated in F2
+- **stdin EOF:** flush stdout, exit 0 — never write to a closed pipe (client explicitly warns of stderr pollution)
+- **Batches:** treated as invalid request (-32600); ACP never batches
+
+<!-- 2025-08-10T23:10: Implementation amendment — std.Io reader buffer bounds line length -->
+- **Line cap:** ~~16 MiB per line; exceeding → -32700 parse error, loop continues~~ → 1 MiB stdin reader buffer; `StreamTooLong` → discard oversized line, answer -32700, connection stays alive. Revisit with dynamic growth if tool results (F5) exceed it
+- **Logging:** stderr only; stdout carries protocol messages only
+
 ### 2025-08-10 — MVP-first scope & deployment path
 
 **Context:** Step 6 (project overview) — asked about timeframes, deployment, milestones.
