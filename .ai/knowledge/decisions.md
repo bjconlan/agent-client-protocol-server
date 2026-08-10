@@ -54,6 +54,18 @@ Format:
 **Options considered:** system package (needs sudo), manual tarball, mise.
 **Outcome:** **mise** — user-level, no sudo, `mise.toml` pins `zig@0.16.0`.
 
+### 2025-08-10 — F3: session lifecycle + prompt flow
+
+**Context:** F3 planning; session-oriented ACP v1 core. User confirmed scope and the synchronous model.
+**Outcome:**
+- **Handler signature:** `fn(ctx: *Context, allocator, params) !Value` — `Context` = session store + stdout writer (handlers stream `session/update` notifications before the response)
+- **session/new:** validate `cwd` (string, required); `mcpServers` accepted+ignored (MCP is Epic 2); id = monotonic counter string
+- **session/prompt:** validate sessionId; stream `agent_message_chunk` updates (content `{type: text, text}`); return `{stopReason: end_turn}`; unknown session → -32602
+- **session/cancel:** notification; sets pending-cancel flag, cooperative best-effort in F3
+- **Cancellation scoping (explicit):** the synchronous read loop cannot read stdin mid-prompt; the instant EchoProvider means cancel never races in F3. Schema MUST-return-`cancelled` + real preemption land in F4 (event loop or worker thread) — recorded here so F4 carries it
+- **Provider seam:** minimal adapter interface + `EchoProvider` (whole text block per chunk) in `provider/`; OpenAI in F4
+- **Capabilities:** `sessionCapabilities: {}` unchanged (now truthful)
+
 ### 2025-08-10 — F2: version-namespaced protocol + initialize contract
 
 **Context:** F2 planning; user requested namespaced v1/v2 protocol support ("2 can ref 1") and MVP-surface capability advertisement.

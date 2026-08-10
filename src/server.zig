@@ -15,6 +15,8 @@ const Io = std.Io;
 
 const json_rpc = @import("protocol/json_rpc.zig");
 const methods_v1 = @import("protocol/v1/methods.zig");
+const types_v1 = @import("protocol/v1/types.zig");
+const echo = @import("provider/echo.zig");
 
 /// Protocol messages only on stdout; all logging goes to stderr (callers
 /// wire the file handles).
@@ -29,6 +31,16 @@ pub fn run(
 ) !void {
     var msg_arena = std.heap.ArenaAllocator.init(gpa);
     defer msg_arena.deinit();
+
+    // Process-lifetime session store (outlives per-message arenas).
+    var session_store = types_v1.SessionStore.init(gpa);
+    defer session_store.deinit();
+
+    var ctx = methods_v1.Context{
+        .sessions = &session_store,
+        .writer = writer,
+        .provider = .{ .generate = echo.generate },
+    };
 
     while (true) {
         _ = msg_arena.reset(.retain_capacity);
@@ -61,36 +73,42 @@ pub fn run(
             },
         };
 
-        dispatch(writer, msg_alloc, message) catch break;
+        dispatch(&ctx, msg_alloc, message) catch break;
     }
 
     // EOF: exit cleanly, no further writes.
 }
 
-/// Dispatch a request through the active protocol registry. For F2 the v1
-/// registry serves every connection; version selection per connection arrives
-/// with session state (F3). Notifications and unexpected inbound responses
-/// are ignored.
+/// Dispatch a request or notification through the v1 registry. Requests are
+/// answered by the handler (result or mapped error); notifications are
+/// handled and receive no response. Notifications and unexpected inbound
+/// responses are ignored.
 fn dispatch(
-    writer: *Io.Writer,
+    ctx: *methods_v1.Context,
     allocator: std.mem.Allocator,
     message: json_rpc.Message,
 ) !void {
     switch (message) {
         .request => |r| {
             if (methods_v1.lookup(r.method)) |handler| {
-                const result = handler(allocator, r.params) catch |err| {
-                    try respondError(writer, allocator, r.id, errorCode(err), "Method failed");
+                const result = handler(ctx, allocator, r.params) catch |err| {
+                    try respondError(ctx.writer, allocator, r.id, errorCode(err), "Method failed");
                     return;
                 };
-                try json_rpc.serializeResponse(allocator, writer, r.id, result);
-                try writer.writeAll("\n");
-                try writer.flush();
+                try json_rpc.serializeResponse(allocator, ctx.writer, r.id, result);
+                try ctx.writer.writeAll("\n");
+                try ctx.writer.flush();
             } else {
-                try respondError(writer, allocator, r.id, json_rpc.ErrorCode.method_not_found, "Method not found");
+                try respondError(ctx.writer, allocator, r.id, json_rpc.ErrorCode.method_not_found, "Method not found");
             }
         },
-        .notification => {},
+        .notification => |n| {
+            if (methods_v1.lookupNotification(n.method)) |handler| {
+                handler(ctx, allocator, n.params) catch |err| {
+                    std.log.err("notification '{s}' failed: {s}", .{ n.method, @errorName(err) });
+                };
+            }
+        },
         .response, .error_response => {},
     }
 }
@@ -184,7 +202,7 @@ test "inbound response from client is ignored" {
 }
 
 test "line without trailing newline at EOF is processed" {
-    const input = "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"session/new\",\"params\":{}}";
+    const input = "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"test/unknown\",\"params\":{}}";
     const expected = "{\"jsonrpc\":\"2.0\",\"id\":5,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}\n";
     try expectRun(input, expected);
 }
@@ -201,14 +219,17 @@ test "initialize: invalid protocolVersion answers -32602" {
     try expectRun(input, expected);
 }
 
-test "initialize then unimplemented session method (fossil flow)" {
+test "fossil client flow: initialize → session/new → session/prompt (streamed)" {
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
         \\{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
+        \\{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"1","prompt":[{"type":"text","text":"hello"}]}}
     ;
     const expected =
         \\{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{},"promptCapabilities":{}},"authMethods":[],"agentInfo":{"name":"agent-client-protocol","version":"0.1.0"}}}
-        \\{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found"}}
+        \\{"jsonrpc":"2.0","id":2,"result":{"sessionId":"1"}}
+        \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}}}
+        \\{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}
     ;
     // Zig multiline literals omit the final newline; the loop emits one per line.
     try expectRun(input, expected ++ "\n");

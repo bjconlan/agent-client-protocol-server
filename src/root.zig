@@ -19,6 +19,7 @@ pub const protocol = struct {
 
 pub const provider = struct {
     pub const adapter = @import("provider/adapter.zig");
+    pub const echo = @import("provider/echo.zig");
     pub const openai = @import("provider/openai.zig");
 };
 
@@ -37,6 +38,7 @@ test {
     std.testing.refAllDecls(protocol.v1.types);
     std.testing.refAllDecls(protocol.v2.methods);
     std.testing.refAllDecls(provider.adapter);
+    std.testing.refAllDecls(provider.echo);
     std.testing.refAllDecls(provider.openai);
     std.testing.refAllDecls(util.json);
     std.testing.refAllDecls(util.http);
