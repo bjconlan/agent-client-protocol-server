@@ -146,10 +146,10 @@ flowchart TD
 
 ## Status
 
-- **Stage:** 3 (Review)
+- **Stage:** 4 (Complete — merged to main as `29893fd`)
 - **Current unit:** —
-- **Last checkpoint:** Implementation committed (efff59b); 14/14 tests, fmt clean, transcript fixture passing
-- **Next action:** User review, then merge on approval
+- **Last checkpoint:** Squash-merged, branch deleted; 19/19 tests, fmt clean
+- **Next action:** None — task done in `.ai/backlog/1.md`
 
 ---
 
