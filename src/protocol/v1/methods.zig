@@ -14,6 +14,7 @@ const json_rpc = @import("../json_rpc.zig");
 const types = @import("types.zig");
 const adapter = @import("../../provider/adapter.zig");
 const echo = @import("../../provider/echo.zig");
+const config_mod = @import("../../config.zig");
 
 /// Version of this registry's protocol.
 pub const protocol_version: u16 = 1;
@@ -21,17 +22,31 @@ pub const protocol_version: u16 = 1;
 pub const agent_name = "agent-client-protocol";
 pub const agent_version = "0.1.0";
 
+/// Signal that a handler started async work that owns the turn's output
+/// (e.g. a worker thread streaming a prompt); the dispatcher must not write a
+/// response.
+pub const DeferredResponse = error{DeferredResponse};
+
 /// Server context threaded through handlers: session store, stdout writer
-/// (for streaming notifications), and the active provider.
+/// (for streaming notifications), provider, and shared async state.
 pub const Context = struct {
     sessions: *types.SessionStore,
     writer: *Io.Writer,
+    writer_lock: *std.atomic.Mutex,
     provider: adapter.Provider,
-    /// Set by `session/cancel`. F3 has no preemptive cancellation (the read
-    /// loop is synchronous), so a cancel arriving before the next prompt
-    /// answers it with `stopReason: cancelled`; mid-prompt preemption lands
-    /// in F4 (event loop / worker thread).
-    cancel_requested: bool = false,
+    /// Set by `session/cancel` (main loop); polled by the prompt worker
+    /// between chunks (preemptive cancellation).
+    cancel_requested: *std.atomic.Value(bool),
+    http: *std.http.Client,
+    config: config_mod.Config,
+    /// Process-lifetime allocator (worker arenas must outlive per-message
+    /// arena resets).
+    process_allocator: std.mem.Allocator,
+    /// Set by the prompt worker when it finishes; the EOF path only cancels a
+    /// still-running worker.
+    worker_done: *std.atomic.Value(bool),
+    /// The active prompt worker thread, joined at EOF.
+    active_worker: ?std.Thread = null,
 };
 
 /// Errors a handler may return, mapped to JSON-RPC codes by the dispatcher:
@@ -40,6 +55,7 @@ pub const Context = struct {
 pub const Handler = *const fn (
     ctx: *Context,
     allocator: std.mem.Allocator,
+    id: json_rpc.RequestId,
     params: std.json.Value,
 ) anyerror!std.json.Value;
 
@@ -96,9 +112,11 @@ pub fn lookupNotification(name: []const u8) ?NotificationHandler {
 fn initialize(
     ctx: *Context,
     allocator: std.mem.Allocator,
+    id: json_rpc.RequestId,
     params: std.json.Value,
 ) anyerror!std.json.Value {
     _ = ctx;
+    _ = id;
     const p = switch (params) {
         .object => |o| o,
         else => return error.InvalidParams,
@@ -136,8 +154,10 @@ fn initialize(
 fn sessionNew(
     ctx: *Context,
     allocator: std.mem.Allocator,
+    id: json_rpc.RequestId,
     params: std.json.Value,
 ) anyerror!std.json.Value {
+    _ = id;
     const p = switch (params) {
         .object => |o| o,
         else => return error.InvalidParams,
@@ -155,11 +175,16 @@ fn sessionNew(
     return .{ .object = result };
 }
 
-/// `session/prompt` — stream the provider's chunks as `session/update`
-/// notifications, then return `PromptResponse {stopReason}`.
+/// `session/prompt` — start a prompt turn.
+///
+/// Validation happens synchronously (including a pending-cancel check); the
+/// actual generation runs on a worker thread so the main loop keeps reading
+/// stdin (making `session/cancel` preemptive). Returns `DeferredResponse`
+/// after spawning — the worker owns the turn's output.
 fn sessionPrompt(
     ctx: *Context,
     allocator: std.mem.Allocator,
+    id: json_rpc.RequestId,
     params: std.json.Value,
 ) anyerror!std.json.Value {
     const p = switch (params) {
@@ -172,20 +197,20 @@ fn sessionPrompt(
     };
     if (ctx.sessions.get(session_id) == null) return error.InvalidParams;
 
-    // F3 cooperative cancellation: a cancel that arrived before this prompt
-    // answers it with `cancelled`.
-    if (ctx.cancel_requested) {
-        ctx.cancel_requested = false;
+    // A cancel that arrived before this prompt answers it with `cancelled`.
+    if (ctx.cancel_requested.load(.monotonic)) {
+        ctx.cancel_requested.store(false, .monotonic);
         return stopReasonResult(allocator, "cancelled");
     }
-    ctx.cancel_requested = false;
+    ctx.cancel_requested.store(false, .monotonic);
 
     const prompt = switch (p.get("prompt") orelse return error.InvalidParams) {
         .array => |arr| arr,
         else => return error.InvalidParams,
     };
 
-    // Extract text blocks; non-text blocks are skipped.
+    // Extract text blocks; non-text blocks are skipped. The worker needs its
+    // own copies (the per-message arena resets while it runs).
     var text_blocks: std.ArrayList([]const u8) = .empty;
     for (prompt.items) |block| {
         if (block != .object) continue;
@@ -197,22 +222,58 @@ fn sessionPrompt(
         try text_blocks.append(allocator, text.string);
     }
 
-    var chunks: std.ArrayList([]const u8) = .empty;
-    const stop = try ctx.provider.generate(allocator, text_blocks.items, &chunks);
+    // Spawn the worker with its own arena + deep copies. Ownership of the
+    // arena transfers to the worker on successful spawn; on any failure
+    // before spawn, free it here. NOTE: returning error.DeferredResponse is
+    // still an error return — errdefers must NOT own the arena (they would
+    // fire and free it while the worker runs).
+    const worker_arena = try ctx.process_allocator.create(std.heap.ArenaAllocator);
+    worker_arena.* = std.heap.ArenaAllocator.init(ctx.process_allocator);
+    const wa = worker_arena.allocator();
 
-    for (chunks.items) |chunk| {
-        try emitMessageChunk(ctx, allocator, session_id, chunk);
-    }
-    return stopReasonResult(allocator, stop);
+    const worker = wa.create(PromptWorker) catch {
+        worker_arena.deinit();
+        ctx.process_allocator.destroy(worker_arena);
+        return error.InternalError;
+    };
+    worker.* = .{
+        .ctx = ctx,
+        .arena = worker_arena,
+        .text_blocks = dupStrings(wa, text_blocks.items) catch {
+            worker_arena.deinit();
+            ctx.process_allocator.destroy(worker_arena);
+            return error.InternalError;
+        },
+        .session_id = wa.dupe(u8, session_id) catch {
+            worker_arena.deinit();
+            ctx.process_allocator.destroy(worker_arena);
+            return error.InternalError;
+        },
+        .id = copyRequestId(wa, id) catch {
+            worker_arena.deinit();
+            ctx.process_allocator.destroy(worker_arena);
+            return error.InternalError;
+        },
+    };
+
+    const thread = std.Thread.spawn(.{}, PromptWorker.run, .{worker}) catch |err| {
+        std.log.err("session/prompt: failed to spawn worker: {s}", .{@errorName(err)});
+        worker_arena.deinit();
+        ctx.process_allocator.destroy(worker_arena);
+        return error.InternalError;
+    };
+    ctx.active_worker = thread;
+    return error.DeferredResponse;
 }
 
-/// `session/cancel` (notification) — set the pending-cancel flag.
-/// See the cancellation note in `Context`.
+/// `session/cancel` (notification) — set the cancellation flag. The prompt
+/// worker polls it between chunks and answers `stopReason: cancelled`.
 fn sessionCancel(
     ctx: *Context,
     allocator: std.mem.Allocator,
     params: std.json.Value,
 ) anyerror!void {
+    _ = allocator;
     const p = switch (params) {
         .object => |o| o,
         else => return, // malformed cancel: ignore
@@ -225,8 +286,153 @@ fn sessionCancel(
         std.log.warn("session/cancel: unknown session '{s}'", .{session_id});
         return;
     }
-    _ = allocator;
-    ctx.cancel_requested = true;
+    ctx.cancel_requested.store(true, .monotonic);
+}
+
+// ---------------------------------------------------------------------------
+// Prompt worker (F4: preemptive cancellation via worker thread)
+// ---------------------------------------------------------------------------
+
+/// Userdata for the provider's emit/cancel callbacks.
+const EmitUd = struct {
+    ctx: *Context,
+    allocator: std.mem.Allocator,
+    session_id: []const u8,
+    /// True once the first chunk has been emitted. Cancels that land before
+    /// streaming starts (e.g. the loop's EOF shutdown racing thread spawn)
+    /// are ignored — pre-start cancels are handled synchronously in
+    /// `sessionPrompt`; mid-stream cancels are honored.
+    streaming: bool = false,
+};
+
+/// Runs one prompt turn on a worker thread: streams provider chunks as
+/// `session/update` notifications (writer lock held per write), then writes
+/// the final response. Owns its arena.
+const PromptWorker = struct {
+    ctx: *Context,
+    arena: *std.heap.ArenaAllocator,
+    text_blocks: []const []const u8,
+    session_id: []const u8,
+    id: json_rpc.RequestId,
+
+    fn run(self: *PromptWorker) void {
+        defer self.ctx.worker_done.store(true, .monotonic);
+        defer {
+            self.arena.deinit();
+            self.ctx.process_allocator.destroy(self.arena);
+        }
+        const allocator = self.arena.allocator();
+
+        var emit_ud = EmitUd{
+            .ctx = self.ctx,
+            .allocator = allocator,
+            .session_id = self.session_id,
+        };
+
+        const api_key = self.ctx.config.api_key orelse {
+            self.writeError(json_rpc.ErrorCode.internal_error, "Missing OPENAI_API_KEY");
+            return;
+        };
+
+        const result = self.ctx.provider.generate(allocator, self.text_blocks, .{
+            .config = &self.ctx.config,
+            .api_key = api_key,
+            .http = self.ctx.http,
+            .emit = emitChunk,
+            .is_cancelled = isCancelled,
+            .userdata = &emit_ud,
+        });
+
+        if (result) |r| {
+            if (r.usage) |u| self.writeUsage(u);
+            self.writeResponse(stopReasonResult(allocator, r.stop_reason) catch {
+                self.writeError(json_rpc.ErrorCode.internal_error, "Internal error");
+                return;
+            });
+        } else |err| {
+            switch (err) {
+                error.Cancelled => self.writeResponse(stopReasonResult(allocator, "cancelled") catch return),
+                error.MissingApiKey => self.writeError(json_rpc.ErrorCode.internal_error, "Missing OPENAI_API_KEY"),
+                error.BadApiKey => self.writeError(json_rpc.ErrorCode.internal_error, "Provider authentication failed"),
+                error.RateLimited => self.writeError(json_rpc.ErrorCode.internal_error, "Provider rate limited"),
+                else => self.writeError(json_rpc.ErrorCode.internal_error, "Provider request failed"),
+            }
+        }
+    }
+
+    /// Emit a `usage_update` notification (schema: used/size).
+    fn writeUsage(self: *PromptWorker, usage: adapter.Usage) void {
+        var params: std.json.ObjectMap = .empty;
+        defer params.deinit(self.arena.allocator());
+        params.put(self.arena.allocator(), "sessionId", .{ .string = self.session_id }) catch return;
+
+        var update: std.json.ObjectMap = .empty;
+        defer update.deinit(self.arena.allocator());
+        update.put(self.arena.allocator(), "sessionUpdate", .{ .string = "usage_update" }) catch return;
+        update.put(self.arena.allocator(), "used", .{ .integer = @intCast(usage.prompt_tokens) }) catch return;
+        update.put(self.arena.allocator(), "size", .{ .integer = @intCast(usage.total_tokens) }) catch return;
+        params.put(self.arena.allocator(), "update", .{ .object = update }) catch return;
+
+        self.writeLocked(json_rpc.serializeNotification(self.arena.allocator(), self.ctx.writer, "session/update", .{ .object = params }));
+    }
+
+    /// Write the final response (with lock).
+    fn writeResponse(self: *PromptWorker, result: std.json.Value) void {
+        self.writeLocked(json_rpc.serializeResponse(self.arena.allocator(), self.ctx.writer, self.id, result));
+    }
+
+    /// Write an error response (with lock).
+    fn writeError(self: *PromptWorker, code: i32, message: []const u8) void {
+        self.writeLocked(json_rpc.serializeError(self.arena.allocator(), self.ctx.writer, self.id, .{
+            .code = code,
+            .message = message,
+        }));
+    }
+
+    /// Write a line + flush, holding the writer lock. Best-effort: write
+    /// failures (client closed the pipe) just end the turn quietly.
+    fn writeLocked(self: *PromptWorker, write_result: anyerror!void) void {
+        lockSpin(self.ctx.writer_lock);
+        defer self.ctx.writer_lock.unlock();
+        write_result catch return;
+        self.ctx.writer.writeAll("\n") catch return;
+        self.ctx.writer.flush() catch return;
+    }
+};
+
+fn emitChunk(chunk: []const u8, userdata: ?*anyopaque) anyerror!void {
+    const ud: *EmitUd = @ptrCast(@alignCast(userdata.?));
+    ud.streaming = true;
+    lockSpin(ud.ctx.writer_lock);
+    defer ud.ctx.writer_lock.unlock();
+    try emitMessageChunk(ud.ctx, ud.allocator, ud.session_id, chunk);
+}
+
+fn isCancelled(userdata: ?*anyopaque) bool {
+    const ud: *EmitUd = @ptrCast(@alignCast(userdata.?));
+    return ud.streaming and ud.ctx.cancel_requested.load(.monotonic);
+}
+
+/// Busy-wait on a short critical section (the writer). `yield()` can fail on
+/// Windows (NtYieldExecution) — ignore that error and spin again.
+pub fn lockSpin(m: *std.atomic.Mutex) void {
+    while (!m.tryLock()) _ = std.Thread.yield() catch {};
+}
+
+/// Deep-copy a list of strings into `allocator`.
+fn dupStrings(allocator: std.mem.Allocator, strings: []const []const u8) ![]const []const u8 {
+    const out = try allocator.alloc([]const u8, strings.len);
+    for (strings, 0..) |s, i| out[i] = try allocator.dupe(u8, s);
+    return out;
+}
+
+/// Copy a RequestId into `allocator` (string ids get duped — the original may
+/// live in a per-message arena).
+fn copyRequestId(allocator: std.mem.Allocator, id: json_rpc.RequestId) !json_rpc.RequestId {
+    return switch (id) {
+        .string => |s| .{ .string = try allocator.dupe(u8, s) },
+        else => id,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -278,11 +484,30 @@ const testing = std.testing;
 fn testContext(a: std.mem.Allocator, writer: *Io.Writer) !*Context {
     const store = try a.create(types.SessionStore);
     store.* = types.SessionStore.init(a);
+    const mutex = try a.create(std.atomic.Mutex);
+    mutex.* = .unlocked;
+    const cancel = try a.create(std.atomic.Value(bool));
+    cancel.* = std.atomic.Value(bool).init(false);
+    const worker_done = try a.create(std.atomic.Value(bool));
+    worker_done.* = std.atomic.Value(bool).init(false);
+    const http = try a.create(std.http.Client);
+    http.* = undefined;
     const ctx = try a.create(Context);
     ctx.* = .{
         .sessions = store,
         .writer = writer,
+        .writer_lock = mutex,
         .provider = .{ .generate = echo.generate },
+        .cancel_requested = cancel,
+        .worker_done = worker_done,
+        .http = http,
+        .config = .{
+            .api_key = "test-key",
+            .base_url = "http://127.0.0.1",
+            .model = "test-model",
+            .effort = "high",
+        },
+        .process_allocator = a,
     };
     return ctx;
 }
@@ -309,7 +534,7 @@ test "initialize: valid request returns v1 response shape" {
     defer params.deinit(a);
     try params.put(a, "protocolVersion", .{ .integer = 1 });
 
-    const result = try initialize(ctx, a, .{ .object = params });
+    const result = try initialize(ctx, a, .{ .int = 1 }, .{ .object = params });
     const obj = switch (result) {
         .object => |o| o,
         else => return error.TestUnexpectedResult,
@@ -340,9 +565,9 @@ test "initialize: invalid protocolVersion rejected" {
     var out: Io.Writer.Allocating = .init(a);
     const ctx = try testContext(a, &out.writer);
 
-    try testing.expectError(error.InvalidParams, initialize(ctx, a, .null));
-    try testing.expectError(error.InvalidParams, initialize(ctx, a, .{ .object = .empty }));
-    try testing.expectError(error.InvalidParams, initialize(ctx, a, .{ .object = blk: {
+    try testing.expectError(error.InvalidParams, initialize(ctx, a, .{ .int = 1 }, .null));
+    try testing.expectError(error.InvalidParams, initialize(ctx, a, .{ .int = 1 }, .{ .object = .empty }));
+    try testing.expectError(error.InvalidParams, initialize(ctx, a, .{ .int = 1 }, .{ .object = blk: {
         var m: std.json.ObjectMap = .empty;
         try m.put(a, "protocolVersion", .{ .integer = 0 });
         break :blk m;
@@ -356,7 +581,7 @@ test "session/new: creates session, validates cwd" {
     var out: Io.Writer.Allocating = .init(a);
     const ctx = try testContext(a, &out.writer);
 
-    const result = try sessionNew(ctx, a, .{ .object = blk: {
+    const result = try sessionNew(ctx, a, .{ .int = 1 }, .{ .object = blk: {
         var m: std.json.ObjectMap = .empty;
         try m.put(a, "cwd", .{ .string = "/tmp" });
         break :blk m;
@@ -367,49 +592,12 @@ test "session/new: creates session, validates cwd" {
     };
     try testing.expectEqualStrings("1", obj.get("sessionId").?.string);
 
-    try testing.expectError(error.InvalidParams, sessionNew(ctx, a, .{ .object = .empty }));
-    try testing.expectError(error.InvalidParams, sessionNew(ctx, a, .{ .object = blk: {
+    try testing.expectError(error.InvalidParams, sessionNew(ctx, a, .{ .int = 1 }, .{ .object = .empty }));
+    try testing.expectError(error.InvalidParams, sessionNew(ctx, a, .{ .int = 1 }, .{ .object = blk: {
         var m: std.json.ObjectMap = .empty;
         try m.put(a, "cwd", .{ .integer = 42 });
         break :blk m;
     } }));
-}
-
-test "session/prompt: streams chunks then end_turn" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var out: Io.Writer.Allocating = .init(a);
-    const ctx = try testContext(a, &out.writer);
-
-    _ = try sessionNew(ctx, a, .{ .object = blk: {
-        var m: std.json.ObjectMap = .empty;
-        try m.put(a, "cwd", .{ .string = "/tmp" });
-        break :blk m;
-    } });
-
-    var prompt: std.json.Array = .init(a);
-    defer prompt.deinit();
-    var block: std.json.ObjectMap = .empty;
-    try block.put(a, "type", .{ .string = "text" });
-    try block.put(a, "text", .{ .string = "hello world" });
-    try prompt.append(.{ .object = block });
-
-    var params: std.json.ObjectMap = .empty;
-    try params.put(a, "sessionId", .{ .string = "1" });
-    try params.put(a, "prompt", .{ .array = prompt });
-
-    const result = try sessionPrompt(ctx, a, .{ .object = params });
-    const obj = switch (result) {
-        .object => |o| o,
-        else => return error.TestUnexpectedResult,
-    };
-    try testing.expectEqualStrings("end_turn", obj.get("stopReason").?.string);
-
-    try testing.expectEqualStrings(
-        "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"hello world\"}}}}\n",
-        out.written(),
-    );
 }
 
 test "session/prompt: unknown session and bad params rejected" {
@@ -419,24 +607,24 @@ test "session/prompt: unknown session and bad params rejected" {
     var out: Io.Writer.Allocating = .init(a);
     const ctx = try testContext(a, &out.writer);
 
-    try testing.expectError(error.InvalidParams, sessionPrompt(ctx, a, .{ .object = blk: {
+    try testing.expectError(error.InvalidParams, sessionPrompt(ctx, a, .{ .int = 3 }, .{ .object = blk: {
         var m: std.json.ObjectMap = .empty;
         try m.put(a, "sessionId", .{ .string = "nope" });
         try m.put(a, "prompt", .{ .array = std.json.Array.init(a) });
         break :blk m;
     } }));
-    try testing.expectError(error.InvalidParams, sessionPrompt(ctx, a, .null));
-    try testing.expectError(error.InvalidParams, sessionPrompt(ctx, a, .{ .object = .empty }));
+    try testing.expectError(error.InvalidParams, sessionPrompt(ctx, a, .{ .int = 3 }, .null));
+    try testing.expectError(error.InvalidParams, sessionPrompt(ctx, a, .{ .int = 3 }, .{ .object = .empty }));
 }
 
-test "session/cancel before prompt answers cancelled" {
+test "session/cancel before prompt answers cancelled synchronously" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var out: Io.Writer.Allocating = .init(a);
     const ctx = try testContext(a, &out.writer);
 
-    _ = try sessionNew(ctx, a, .{ .object = blk: {
+    _ = try sessionNew(ctx, a, .{ .int = 1 }, .{ .object = blk: {
         var m: std.json.ObjectMap = .empty;
         try m.put(a, "cwd", .{ .string = "/tmp" });
         break :blk m;
@@ -447,9 +635,9 @@ test "session/cancel before prompt answers cancelled" {
         try m.put(a, "sessionId", .{ .string = "1" });
         break :blk m;
     } });
-    try testing.expect(ctx.cancel_requested);
+    try testing.expect(ctx.cancel_requested.load(.monotonic));
 
-    const result = try sessionPrompt(ctx, a, .{ .object = blk: {
+    const result = try sessionPrompt(ctx, a, .{ .int = 2 }, .{ .object = blk: {
         var m: std.json.ObjectMap = .empty;
         try m.put(a, "sessionId", .{ .string = "1" });
         try m.put(a, "prompt", .{ .array = std.json.Array.init(a) });
@@ -460,5 +648,20 @@ test "session/cancel before prompt answers cancelled" {
         else => return error.TestUnexpectedResult,
     };
     try testing.expectEqualStrings("cancelled", obj.get("stopReason").?.string);
-    try testing.expect(!ctx.cancel_requested);
+    try testing.expect(!ctx.cancel_requested.load(.monotonic));
+}
+
+test "session/cancel: unknown session ignored" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: Io.Writer.Allocating = .init(a);
+    const ctx = try testContext(a, &out.writer);
+
+    try sessionCancel(ctx, a, .{ .object = blk: {
+        var m: std.json.ObjectMap = .empty;
+        try m.put(a, "sessionId", .{ .string = "nope" });
+        break :blk m;
+    } });
+    try testing.expect(!ctx.cancel_requested.load(.monotonic));
 }

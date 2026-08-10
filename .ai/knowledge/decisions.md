@@ -54,6 +54,16 @@ Format:
 **Options considered:** system package (needs sudo), manual tarball, mise.
 **Outcome:** **mise** — user-level, no sudo, `mise.toml` pins `zig@0.16.0`.
 
+### 2025-08-10 — F4: OpenAI Responses adapter + cancellation architecture
+
+**Context:** F4 planning; user confirmed config vars incl. model + effort (target `deepseek-v4-flash`, `high`), lazy-fail on missing key, startup auth/health validation.
+**Outcome:**
+- **Config env:** `OPENAI_API_KEY` (lazy if missing), `OPENAI_URL` (default `https://api.openai.com/v1`), `OPENAI_MODEL` (default `deepseek-v4-flash`), `OPENAI_EFFORT` (default `high` → `reasoning.effort`)
+- **Startup health check:** when key present, `GET {base}/models` with Bearer — fail fast on bad key/unreachable; missing key → lazy fail at first prompt
+- **Cancellation (carried from F3):** worker thread per prompt + deep-copied params + atomic cancel flag + writer mutex; loop keeps reading stdin; worker answers `cancelled` mid-stream; loop joins at EOF
+- **Provider:** OpenAI Responses API (`/responses`, stream SSE); delta → agent_message_chunk; usage → usage_update; completed → end_turn; failed → error
+- **Tests:** mock `std.http.Server` on ephemeral port serving scripted streams
+
 ### 2025-08-10 — F3: session lifecycle + prompt flow
 
 **Context:** F3 planning; session-oriented ACP v1 core. User confirmed scope and the synchronous model.

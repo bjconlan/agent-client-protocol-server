@@ -164,7 +164,54 @@ sequenceDiagram
 
 ## Status
 
-- **Stage:** 1 (Planning)
-- **Current unit:** —
-- **Last checkpoint:** Plan written and reviewed
-- **Next action:** User approval, then prototype
+- **Stage:** 2 (Implementation)
+- **Current unit:** 6 (Conformance)
+- **Last checkpoint:** Units 1–5 done — config (env + health check), http wrapper, OpenAI Responses impl (SSE, usage), worker-thread cancellation, mock-server tests; 41/41 tests
+- **Next action:** user review, then merge on approval
+
+---
+
+## Outcomes
+
+### What was implemented
+- `src/config.zig` — env config (key/url/model/effort) + startup health check
+- `src/util/http.zig` — streaming JSON request wrapper over `std.http.Client`
+- `src/provider/openai.zig` — Responses API impl: request build, SSE parse,
+  chunk/usage/stop mapping
+- `src/provider/adapter.zig` / `echo.zig` — push-based provider interface
+  (emit + is_cancelled callbacks)
+- `src/protocol/v1/methods.zig` — worker-thread prompt with preemptive
+  cancel, writer mutex, DeferredResponse
+- `src/server.zig` — ctx wiring (http client, config, atomics), EOF join
+- `src/main.zig` — config load + health check before the loop
+- `src/util/mock_http.zig` — test-only mock HTTP server
+
+### Changes from the original plan
+- Cancellation raced with fast worker completion at EOF — fixed with a
+  `worker_done` flag + first-chunk guard (cancels landing before streaming
+  starts are ignored; pre-start cancels are handled synchronously)
+- Worker arena was freed by errdefers when returning `error.DeferredResponse`
+  (an error return!) — restructured to explicit transfer of ownership to the
+  worker. This caused the "General protection exception" seen during testing
+
+### Use cases resolved
+- Real provider calls: prompt text → OpenAI Responses stream → ACP chunks ✓
+- Configurable provider (OpenAI-compatible endpoints, DeepSeek) ✓
+- Startup validation of key/endpoint; lazy fail when key missing ✓
+- Preemptive cancellation mid-stream (`session/cancel` → `cancelled`) ✓
+- EOF shutdown joins/cancels the worker, exits cleanly ✓
+
+### Verification results
+- All checkpoints passed: yes (except the manual live-DeepSeek smoke test —
+  requires the user's key, outstanding)
+- Full test suite: 41/41 passing; fmt clean; smoke fixture OK
+- Benchmarks: n/a
+
+### Knowledge updates
+- decisions.md: F4 entry (config vars, health check, worker-thread cancel,
+  mock tests, stuck-network follow-up)
+- glossary.md: adapter/echo seam; mock server; worker-thread pattern
+- References: openai-api.md already captured the Responses contract
+
+## Status
+- **Stage:** 3 (Review) — see Status above for the implementation checkpoint

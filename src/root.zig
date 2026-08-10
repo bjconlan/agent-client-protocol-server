@@ -26,6 +26,8 @@ pub const provider = struct {
 pub const util = struct {
     pub const json = @import("util/json.zig");
     pub const http = @import("util/http.zig");
+    /// Test-only mock HTTP server (compiled in all builds; only used by tests).
+    pub const mock_http = @import("util/mock_http.zig");
 };
 
 test {
@@ -42,5 +44,6 @@ test {
     std.testing.refAllDecls(provider.openai);
     std.testing.refAllDecls(util.json);
     std.testing.refAllDecls(util.http);
+    std.testing.refAllDecls(util.mock_http);
     std.testing.refAllDecls(config);
 }

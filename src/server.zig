@@ -17,17 +17,21 @@ const json_rpc = @import("protocol/json_rpc.zig");
 const methods_v1 = @import("protocol/v1/methods.zig");
 const types_v1 = @import("protocol/v1/types.zig");
 const echo = @import("provider/echo.zig");
+const config_mod = @import("config.zig");
 
 /// Protocol messages only on stdout; all logging goes to stderr (callers
 /// wire the file handles).
 const line_buffer_size = 1024 * 1024;
 
 /// Run the transport loop until EOF. `gpa` backs a per-message arena that is
-/// reset each iteration.
+/// reset each iteration; the session store, HTTP client, and prompt workers
+/// use `gpa` directly (process lifetime).
 pub fn run(
+    io: Io,
     reader: *Io.Reader,
     writer: *Io.Writer,
     gpa: std.mem.Allocator,
+    config: config_mod.Config,
 ) !void {
     var msg_arena = std.heap.ArenaAllocator.init(gpa);
     defer msg_arena.deinit();
@@ -36,10 +40,22 @@ pub fn run(
     var session_store = types_v1.SessionStore.init(gpa);
     defer session_store.deinit();
 
+    var writer_lock: std.atomic.Mutex = .unlocked;
+    var cancel_requested = std.atomic.Value(bool).init(false);
+    var worker_done = std.atomic.Value(bool).init(false);
+    var http_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer http_client.deinit();
+
     var ctx = methods_v1.Context{
         .sessions = &session_store,
         .writer = writer,
+        .writer_lock = &writer_lock,
         .provider = .{ .generate = echo.generate },
+        .cancel_requested = &cancel_requested,
+        .worker_done = &worker_done,
+        .http = &http_client,
+        .config = config,
+        .process_allocator = gpa,
     };
 
     while (true) {
@@ -51,7 +67,7 @@ pub fn run(
                 // Line exceeds the reader buffer: discard it and answer with a
                 // parse error, then keep the connection alive.
                 _ = reader.discardDelimiterInclusive('\n') catch {};
-                respondError(writer, msg_alloc, .null, json_rpc.ErrorCode.parse_error, "Parse error") catch break;
+                respondErrorLocked(&ctx, msg_alloc, .null, json_rpc.ErrorCode.parse_error, "Parse error") catch break;
                 continue;
             },
             else => {
@@ -64,11 +80,11 @@ pub fn run(
 
         const message = json_rpc.parseLine(msg_alloc, line) catch |err| switch (err) {
             error.ParseError => {
-                respondError(writer, msg_alloc, .null, json_rpc.ErrorCode.parse_error, "Parse error") catch break;
+                respondErrorLocked(&ctx, msg_alloc, .null, json_rpc.ErrorCode.parse_error, "Parse error") catch break;
                 continue;
             },
             error.InvalidRequest => {
-                respondError(writer, msg_alloc, .null, json_rpc.ErrorCode.invalid_request, "Invalid Request") catch break;
+                respondErrorLocked(&ctx, msg_alloc, .null, json_rpc.ErrorCode.invalid_request, "Invalid Request") catch break;
                 continue;
             },
         };
@@ -76,13 +92,19 @@ pub fn run(
         dispatch(&ctx, msg_alloc, message) catch break;
     }
 
-    // EOF: exit cleanly, no further writes.
+    // EOF: cancel a still-running prompt worker and join it, then exit
+    // cleanly with no further writes. A finished worker is joined as-is so a
+    // fast turn isn't spuriously reported as cancelled.
+    if (ctx.active_worker) |worker_thread| {
+        if (!ctx.worker_done.load(.monotonic)) cancel_requested.store(true, .monotonic);
+        worker_thread.join();
+    }
 }
 
 /// Dispatch a request or notification through the v1 registry. Requests are
-/// answered by the handler (result or mapped error); notifications are
-/// handled and receive no response. Notifications and unexpected inbound
-/// responses are ignored.
+/// answered by the handler (result or mapped error); `DeferredResponse`
+/// means a worker owns the turn's output. Notifications are handled and
+/// receive no response; unexpected inbound responses are ignored.
 fn dispatch(
     ctx: *methods_v1.Context,
     allocator: std.mem.Allocator,
@@ -91,15 +113,20 @@ fn dispatch(
     switch (message) {
         .request => |r| {
             if (methods_v1.lookup(r.method)) |handler| {
-                const result = handler(ctx, allocator, r.params) catch |err| {
-                    try respondError(ctx.writer, allocator, r.id, errorCode(err), "Method failed");
-                    return;
+                const result = handler(ctx, allocator, r.id, r.params) catch |err| switch (err) {
+                    error.DeferredResponse => return, // worker writes the output
+                    else => {
+                        try respondErrorLocked(ctx, allocator, r.id, errorCode(err), "Method failed");
+                        return;
+                    },
                 };
+                methods_v1.lockSpin(ctx.writer_lock);
+                defer ctx.writer_lock.unlock();
                 try json_rpc.serializeResponse(allocator, ctx.writer, r.id, result);
                 try ctx.writer.writeAll("\n");
                 try ctx.writer.flush();
             } else {
-                try respondError(ctx.writer, allocator, r.id, json_rpc.ErrorCode.method_not_found, "Method not found");
+                try respondErrorLocked(ctx, allocator, r.id, json_rpc.ErrorCode.method_not_found, "Method not found");
             }
         },
         .notification => |n| {
@@ -123,19 +150,22 @@ fn errorCode(err: anyerror) i32 {
     };
 }
 
-fn respondError(
-    writer: *Io.Writer,
+/// Write an error response holding the writer lock (used by the main loop).
+fn respondErrorLocked(
+    ctx: *methods_v1.Context,
     allocator: std.mem.Allocator,
     id: json_rpc.RequestId,
     code: i32,
     message_text: []const u8,
 ) !void {
-    try json_rpc.serializeError(allocator, writer, id, .{
+    methods_v1.lockSpin(ctx.writer_lock);
+    defer ctx.writer_lock.unlock();
+    try json_rpc.serializeError(allocator, ctx.writer, id, .{
         .code = code,
         .message = message_text,
     });
-    try writer.writeAll("\n");
-    try writer.flush();
+    try ctx.writer.writeAll("\n");
+    try ctx.writer.flush();
 }
 
 // ---------------------------------------------------------------------------
@@ -149,9 +179,19 @@ fn expectRun(input: []const u8, expected: []const u8) !void {
     defer arena.deinit();
     const a = arena.allocator();
 
+    var threaded = Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     var fixed_reader = Io.Reader.fixed(input);
     var out: Io.Writer.Allocating = .init(a);
-    try run(&fixed_reader, &out.writer, a);
+    const cfg = @import("config.zig").Config{
+        .api_key = "test-key",
+        .base_url = "http://127.0.0.1:1",
+        .model = "test-model",
+        .effort = "high",
+    };
+    try run(io, &fixed_reader, &out.writer, a, cfg);
     try testing.expectEqualStrings(expected, out.written());
 }
 
