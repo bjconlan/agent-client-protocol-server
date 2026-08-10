@@ -47,6 +47,11 @@ pub const Result = struct {
     usage: ?Usage,
     /// Tool calls the model requested (empty → the turn is done).
     tool_calls: []ToolCall,
+    /// The model's output items from this call (reasoning, message,
+    /// function_call, …) — must be echoed back into the next call's input
+    /// (some providers, e.g. DeepSeek, require reasoning output to be
+    /// passed back to continue).
+    output_items: []std.json.Value,
 };
 
 /// Per-generation options.
@@ -70,6 +75,8 @@ pub const Provider = struct {
         /// Prebuilt input items (session history + current prompt), a
         /// `std.json.Array` Value.
         input: std.json.Value,
+        /// The previous call's output items (echoed back, e.g. reasoning).
+        prior_outputs: []const std.json.Value,
         /// Prior tool results, appended as `function_call_output` items.
         tool_results: []const ToolResult,
         options: Options,

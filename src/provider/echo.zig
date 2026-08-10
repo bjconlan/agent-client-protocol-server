@@ -12,6 +12,7 @@ const adapter = @import("adapter.zig");
 pub const generate: *const fn (
     allocator: std.mem.Allocator,
     input: std.json.Value,
+    prior_outputs: []const std.json.Value,
     tool_results: []const adapter.ToolResult,
     options: adapter.Options,
 ) anyerror!adapter.Result = generateImpl;
@@ -19,15 +20,17 @@ pub const generate: *const fn (
 fn generateImpl(
     allocator: std.mem.Allocator,
     input: std.json.Value,
+    prior_outputs: []const std.json.Value,
     tool_results: []const adapter.ToolResult,
     options: adapter.Options,
 ) anyerror!adapter.Result {
     _ = allocator;
+    _ = prior_outputs;
     _ = tool_results;
     // Echo the user text blocks from the input items.
     const arr = switch (input) {
         .array => |a| a,
-        else => return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{} },
+        else => return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{}, .output_items = &.{} },
     };
     for (arr.items) |item| {
         if (item != .object) continue;
@@ -44,12 +47,12 @@ fn generateImpl(
             if (text != .string) continue;
             if (text.string.len == 0) continue;
             if (options.is_cancelled(options.userdata)) {
-                return .{ .stop_reason = "cancelled", .usage = null, .tool_calls = &.{} };
+                return .{ .stop_reason = "cancelled", .usage = null, .tool_calls = &.{}, .output_items = &.{} };
             }
             try options.emit(text.string, options.userdata);
         }
     }
-    return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{} };
+    return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{}, .output_items = &.{} };
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +95,7 @@ test "echo: emits blocks, end_turn; honours cancellation" {
     try msg.put(a, "content", .{ .array = content });
     try input.append(.{ .object = msg });
 
-    const result = try generateImpl(a, .{ .array = input }, &.{}, .{
+    const result = try generateImpl(a, .{ .array = input }, &.{}, &.{}, .{
         .config = &cfg,
         .api_key = "",
         .http = &http,
@@ -115,7 +118,7 @@ test "echo: emits blocks, end_turn; honours cancellation" {
     try testing.expectEqual(@as(usize, 2), chunks.items.len);
 
     cancel = true;
-    const cancelled = try generateImpl(a, .{ .array = input }, &.{}, .{
+    const cancelled = try generateImpl(a, .{ .array = input }, &.{}, &.{}, .{
         .config = &cfg,
         .api_key = "",
         .http = &http,

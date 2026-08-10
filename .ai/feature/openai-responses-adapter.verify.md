@@ -55,9 +55,10 @@ Validates the implementation against the plan's verification strategy.
 | Binary: lazy-fail + startup health-check paths | PASS (manual) |
 
 ## Exceptions / follow-ups
-- **Live smoke test with the user's DeepSeek key is still outstanding**
-  (manual, per plan) — needs `OPENAI_API_KEY` + `OPENAI_URL=
-  https://api.deepseek.com/v1`, `OPENAI_MODEL=deepseek-v4-flash`
+- **Live smoke test with the user's DeepSeek key — DONE (2025-08-10/11):
+  basic prompt + full tool-call round-trip verified live.** Integration bugs
+  found and fixed during the live test (see below), recorded in the F4/F5
+  plan outcomes
 - **Stuck-network worker at EOF**: if the provider connection hangs, EOF
   join would block (the first-chunk guard means no cancel fires). Needs an
   HTTP request timeout — noted for F5/Epic 2

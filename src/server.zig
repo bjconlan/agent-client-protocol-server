@@ -341,17 +341,19 @@ var fake_call_name: []const u8 = "get_current_time";
 fn fakeToolGenerate(
     allocator: std.mem.Allocator,
     input: std.json.Value,
+    prior_outputs: []const std.json.Value,
     tool_results: []const @import("provider/adapter.zig").ToolResult,
     options: @import("provider/adapter.zig").Options,
 ) anyerror!@import("provider/adapter.zig").Result {
     _ = input;
+    _ = prior_outputs;
     if (tool_results.len == 0) {
         const calls = try allocator.alloc(@import("provider/adapter.zig").ToolCall, 1);
         calls[0] = .{ .id = "call_1", .name = fake_call_name, .arguments = "{\"x\":1}" };
-        return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = calls };
+        return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = calls, .output_items = &.{} };
     }
     try options.emit("it is now done", options.userdata);
-    return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{} };
+    return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{}, .output_items = &.{} };
 }
 
 test "tool-call round-trip: echo tool, permission granted, result fed back" {

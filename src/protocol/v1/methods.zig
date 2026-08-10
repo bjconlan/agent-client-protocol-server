@@ -377,6 +377,7 @@ const PromptWorker = struct {
         };
 
         var tool_results: std.ArrayList(adapter.ToolResult) = .empty;
+        var prior_outputs: std.ArrayList(std.json.Value) = .empty;
         var final_stop: []const u8 = "end_turn";
         var final_usage: ?adapter.Usage = null;
 
@@ -386,7 +387,7 @@ const PromptWorker = struct {
                 return;
             };
 
-            const result = self.ctx.provider.generate(allocator, input, tool_results.items, .{
+            const result = self.ctx.provider.generate(allocator, input, prior_outputs.items, tool_results.items, .{
                 .config = &self.ctx.config,
                 .api_key = api_key,
                 .http = self.ctx.http,
@@ -420,6 +421,13 @@ const PromptWorker = struct {
             };
 
             if (r.usage) |u| final_usage = u;
+            // Echo the model's output items (reasoning/function_call) into
+            // the next call; some providers require this to continue.
+            prior_outputs.clearRetainingCapacity();
+            prior_outputs.appendSlice(allocator, r.output_items) catch {
+                self.writeError(json_rpc.ErrorCode.internal_error, "Internal error");
+                return;
+            };
             if (r.tool_calls.len == 0) {
                 final_stop = r.stop_reason;
                 break;

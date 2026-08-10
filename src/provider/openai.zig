@@ -27,10 +27,11 @@ pub const GenerateError = adapter.GenerateError;
 pub fn generate(
     allocator: std.mem.Allocator,
     input: std.json.Value,
+    prior_outputs: []const std.json.Value,
     tool_results: []const adapter.ToolResult,
     options: Options,
 ) GenerateError!Result {
-    const body = try buildBody(allocator, options.config, input, tool_results, options.tools);
+    const body = try buildBody(allocator, options.config, input, prior_outputs, tool_results, options.tools);
     defer allocator.free(body);
 
     const url = try http_util.url(allocator, options.config.base_url, "/responses");
@@ -47,16 +48,18 @@ fn buildBody(
     allocator: std.mem.Allocator,
     config: *const config_mod.Config,
     input_value: std.json.Value,
+    prior_outputs: []const std.json.Value,
     tool_results: []const adapter.ToolResult,
     tools_defs: []const tools.Tool,
 ) ![]u8 {
-    // input = passed items (history + current prompt) + function_call_output
-    // items for prior tool results.
+    // input = passed items (history + current prompt) + previous output
+    // items (reasoning/function_call echo) + function_call_output items.
     var input = switch (input_value) {
         .array => |arr| arr,
         else => std.json.Array.init(allocator),
     };
     defer input.deinit();
+    for (prior_outputs) |item| try input.append(item);
     for (tool_results) |tr| {
         var item: std.json.ObjectMap = .empty;
         try item.put(allocator, "type", .{ .string = "function_call_output" });
@@ -65,7 +68,10 @@ fn buildBody(
         try input.append(.{ .object = item });
     }
 
-    // tools param from the registry definitions.
+    // tools param from the registry definitions. OpenAI nests the function
+    // under a `function` object; DeepSeek's Responses API uses the flat
+    // shape (name at the top level) — detected by host.
+    const flat_tools = std.mem.indexOf(u8, config.base_url, "deepseek.com") != null;
     var tools_arr: std.json.Array = std.json.Array.init(allocator);
     defer tools_arr.deinit();
     for (tools_defs) |tool| {
@@ -74,13 +80,19 @@ fn buildBody(
             .allocate = .alloc_always,
             .max_value_len = tool.parameters.len,
         }) catch continue;
-        var fn_obj: std.json.ObjectMap = .empty;
-        try fn_obj.put(allocator, "name", .{ .string = tool.name });
-        try fn_obj.put(allocator, "description", .{ .string = tool.description });
-        try fn_obj.put(allocator, "parameters", params);
         var tool_obj: std.json.ObjectMap = .empty;
         try tool_obj.put(allocator, "type", .{ .string = "function" });
-        try tool_obj.put(allocator, "function", .{ .object = fn_obj });
+        if (flat_tools) {
+            try tool_obj.put(allocator, "name", .{ .string = tool.name });
+            try tool_obj.put(allocator, "description", .{ .string = tool.description });
+            try tool_obj.put(allocator, "parameters", params);
+        } else {
+            var fn_obj: std.json.ObjectMap = .empty;
+            try fn_obj.put(allocator, "name", .{ .string = tool.name });
+            try fn_obj.put(allocator, "description", .{ .string = tool.description });
+            try fn_obj.put(allocator, "parameters", params);
+            try tool_obj.put(allocator, "function", .{ .object = fn_obj });
+        }
         try tools_arr.append(.{ .object = tool_obj });
     }
 
@@ -114,11 +126,12 @@ fn parseStream(
     var usage: ?adapter.Usage = null;
     var saw_text: bool = false;
     var tool_calls: std.ArrayList(adapter.ToolCall) = .empty;
+    var output_items: std.ArrayList(std.json.Value) = .empty;
     var current_args: std.ArrayList(u8) = .empty;
     var in_tool_call = false;
 
     while (true) {
-        if (options.is_cancelled(options.userdata)) return .{ .stop_reason = "cancelled", .usage = usage, .tool_calls = tool_calls.items };
+        if (options.is_cancelled(options.userdata)) return .{ .stop_reason = "cancelled", .usage = usage, .tool_calls = tool_calls.items, .output_items = output_items.items };
 
         const line = reader.takeDelimiter('\n') catch |err| switch (err) {
             error.StreamTooLong => return error.GenerateFailed,
@@ -178,6 +191,7 @@ fn parseStream(
                 .string => |str| str,
                 else => continue,
             };
+            try output_items.append(allocator, item);
             if (!std.mem.eql(u8, item_type, "function_call")) continue;
             const call_id = switch (io.get("call_id") orelse continue) {
                 .string => |str| str,
@@ -203,16 +217,20 @@ fn parseStream(
             if (obj.get("response")) |resp| {
                 usage = extractUsage(resp);
             }
-            return .{ .stop_reason = "end_turn", .usage = usage, .tool_calls = tool_calls.items };
+            // Drain the remainder of the body so the HTTP connection can be
+            // reused cleanly (otherwise the next request on the pooled
+            // connection fails).
+            while (reader.takeDelimiter('\n') catch null) |_| {}
+            return .{ .stop_reason = "end_turn", .usage = usage, .tool_calls = tool_calls.items, .output_items = output_items.items };
         } else if (std.mem.eql(u8, event_type, "response.incomplete")) {
-            return .{ .stop_reason = "max_tokens", .usage = usage, .tool_calls = tool_calls.items };
+            return .{ .stop_reason = "max_tokens", .usage = usage, .tool_calls = tool_calls.items, .output_items = output_items.items };
         } else if (std.mem.eql(u8, event_type, "response.failed")) {
             return error.GenerateFailed;
         }
         // other events (created, in_progress, output_item.*, ...) ignored
     }
 
-    return .{ .stop_reason = "end_turn", .usage = usage, .tool_calls = tool_calls.items };
+    return .{ .stop_reason = "end_turn", .usage = usage, .tool_calls = tool_calls.items, .output_items = output_items.items };
 }
 
 /// Extract usage from the response object (final event with
@@ -390,7 +408,7 @@ test "buildBody: contains model, reasoning.effort, stream flags" {
     try msg.put(a, "content", .{ .array = content });
     try input.append(.{ .object = msg });
 
-    const body = try buildBody(a, &cfg, .{ .array = input }, &.{}, &.{});
+    const body = try buildBody(a, &cfg, .{ .array = input }, &.{}, &.{}, &.{});
     defer a.free(body);
 
     var scanner = std.json.Scanner.initCompleteInput(a, body);
@@ -440,7 +458,7 @@ test "generate: full round-trip against a mock /responses endpoint" {
     const chunks = try a.create(std.ArrayList([]const u8));
     chunks.* = .empty;
 
-    const result = try generate(a, .{ .array = std.json.Array.init(a) }, &.{}, .{
+    const result = try generate(a, .{ .array = std.json.Array.init(a) }, &.{}, &.{}, .{
         .config = &cfg,
         .api_key = "sk-test",
         .http = &http,
@@ -517,7 +535,7 @@ test "buildBody: tools array includes registry definitions" {
     var cfg = config_mod.Config{ .api_key = null, .base_url = "http://x", .model = "m", .effort = "high" };
     const tools_registry = @import("../tools/registry.zig");
 
-    const body = try buildBody(a, &cfg, .{ .array = std.json.Array.init(a) }, &.{}, &tools_registry.registry);
+    const body = try buildBody(a, &cfg, .{ .array = std.json.Array.init(a) }, &.{}, &.{}, &tools_registry.registry);
     defer a.free(body);
 
     var scanner = std.json.Scanner.initCompleteInput(a, body);

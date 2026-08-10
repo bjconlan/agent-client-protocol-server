@@ -48,12 +48,15 @@ pub fn request(
 ) Error!Response {
     const uri = std.Uri.parse(url_text) catch return error.Network;
 
+    const auth_header = std.fmt.allocPrint(allocator, "Bearer {s}", .{api_key}) catch return error.Network;
+    defer allocator.free(auth_header);
+
     var req = client.request(
         if (body == null) .GET else .POST,
         uri,
         .{
             .headers = .{
-                .authorization = .{ .override = api_key },
+                .authorization = .{ .override = auth_header },
                 .content_type = if (body != null) .{ .override = "application/json" } else .default,
             },
         },
