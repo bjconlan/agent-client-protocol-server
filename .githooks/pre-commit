@@ -1,0 +1,21 @@
+# pre-commit: zig fmt --check + zig build test
+
+set -e
+
+# Resolve zig — either on PATH (mise shims) or via `mise exec` fallback.
+if command -v zig >/dev/null 2>&1; then
+  ZIG=zig
+elif command -v mise >/dev/null 2>&1 && mise which zig >/dev/null 2>&1; then
+  ZIG="mise exec -- zig"
+else
+  echo "pre-commit: zig not found — install with: mise use zig@latest" >&2
+  exit 1
+fi
+
+echo "pre-commit: zig fmt --check"
+$ZIG fmt --check .
+
+echo "pre-commit: zig build test"
+$ZIG build test
+
+echo "pre-commit: OK"
