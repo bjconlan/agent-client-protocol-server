@@ -214,4 +214,4 @@ sequenceDiagram
 - References: openai-api.md already captured the Responses contract
 
 ## Status
-- **Stage:** 3 (Review) — see Status above for the implementation checkpoint
+- **Stage:** 4 (Complete — merged to main as `daa133a`) — see Status above for the implementation checkpoint
