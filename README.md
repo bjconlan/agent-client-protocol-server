@@ -208,6 +208,20 @@ informational messages; `warn`/`err` reduce noise.
   windows). All targets are cross-compiled from the ubuntu runner via
   `zig build -Dtarget=…`; `src` is a `git archive` tarball.
 
+### Cutting a release
+
+A release is triggered by pushing a tag in fossil's snapshot date-time format
+(`YYYYMMDDHHMMSS`, UTC — the workflow also accepts the 12-digit
+`YYYYMMDDHHMM`). The tag becomes the version in the artifact names:
+
+```sh
+export TAG="$(date -u +%Y%m%d%H%M%S)"; git tag $TAG && git push origin $TAG
+```
+
+The workflow then cross-compiles all 7 binary targets + the source tarball and
+attaches them to a GitHub release (`acps-<platform>-<stamp>`, e.g.
+`acps-linux-x64-20260801193352.tar.gz`).
+
 ## Project layout
 
 ```
