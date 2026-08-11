@@ -9,8 +9,10 @@ clients (agent hosts/editors) over **stdio** using JSON-RPC 2.0, as defined by t
 Agent Client Protocol specification.
 
 The server brokers requests between an ACP-speaking client and a model provider
-API. The current implementation targets **OpenAI's Responses API**, behind a
-provider-adapter interface intended to support additional providers later.
+API. Providers are declared in a config file and served through adapter
+implementations per API dialect — currently **OpenAI Responses** (`api:
+"openai"`) and **Anthropic Messages** (`api: "anthropic"`), both verified live
+end-to-end (including against DeepSeek, which serves both dialects).
 
 ## Tech Stack
 
@@ -20,23 +22,26 @@ provider-adapter interface intended to support additional providers later.
 | Build / dependency resolution | `build.zig` + `build.zig.zon` (`zig fetch`) |
 | Protocol | ACP **v1** (v2-ready via `protocolVersion` negotiation) |
 | Transport | stdio (stdin/stdout), JSON-RPC 2.0 per ACP spec |
-| Model provider | OpenAI Responses API (first adapter) |
+| Model providers | OpenAI Responses API + Anthropic Messages API (adapter per `api`) |
+| Tool calling | Agent-side execution; client grants via `session/request_permission` |
 | Formatting / conformance | `zig fmt` (enforced via pre-commit hook) |
-| Testing | `zig build test` (`std.testing`) |
+| Testing | `zig build test` (`std.testing`), mock HTTP server |
+| Logging | Zig `std.log`, scoped edge tracing via `ACP_LOG` |
 | Target platforms | Linux (initial), cross-platform macOS/Windows later |
 
 ## Status
 
-**MVP complete.** The server handles the full ACP v1 session flow over stdio:
-`initialize` (version negotiation), `session/new`, `session/prompt` with
-streamed `session/update` notifications, `session/cancel` (preemptive), and
-agent-side tool execution (`session/request_permission` + `tool_call`
-updates) with client-persisted permissions. Backed by the OpenAI Responses
-API (or any OpenAI-compatible endpoint — verified live against DeepSeek with
-`get_current_time`). No config file; env-only.
+**Epics 1–2 complete.** The server handles the full ACP v1 session flow over
+stdio: `initialize` (version negotiation), `session/new` (with a model
+config-option selector), `session/set_config_option` (per-session API knobs),
+`session/prompt` (streamed `session/update` notifications), `session/cancel`
+(preemptive), and agent-side tool execution with client-persisted
+permissions. Multi-provider config with two API dialects, both live-verified
+(DeepSeek via `/v1` Responses and `/anthropic` Messages).
 
-Remaining roadmap (Epic 2): Anthropic adapter, multi-provider config,
-multiple LLMs per session (ACP v2 partners), ACP v2 support, persistence.
+Deferred items (Epic 3, `.ai/backlog/3.md`): per-session provider switching
+(waits on the stabilized ACP v2 `providers/*`), ACP v2 support, session
+persistence, a Chat Completions adapter.
 
 ## Prerequisites
 
@@ -76,44 +81,110 @@ zig fmt --check .  # formatting conformance
 A pre-commit hook runs `zig fmt --check` + `zig build test` on every commit
 (versioned in `.githooks/`, wired via `git config core.hooksPath .githooks`).
 
+An end-to-end smoke test drives the real fossil ACP client against the binary
+(`tclsh tests/fossil-e2e.tcl`), and `tests/transport-smoke.sh` checks the
+stdio transport transcript.
+
 ## Configuration
 
-MVP has no config file. Provider settings come from environment:
+### Config file (multi-provider)
+
+A JSON config file (from `$ACP_CONFIG` or
+`~/.config/agent-client-protocol/config.json`) declares named providers:
+
+```json
+{
+  "default_provider": "deepseek",
+  "providers": {
+    "deepseek": {
+      "api": "openai",
+      "url": "https://api.deepseek.com/v1",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-v4-flash"
+    },
+    "deepseek-anthropic": {
+      "api": "anthropic",
+      "url": "https://api.deepseek.com/anthropic",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-v4-flash"
+    }
+  }
+}
+```
+
+| Field | Purpose |
+|-------|---------|
+| `default_provider` | Optional; the default is the **first listed** provider |
+| `providers.<name>.api` | Adapter dialect: `openai` (Responses API) or `anthropic` (Messages API) |
+| `providers.<name>.url` | Base URL; `/responses` or `/v1/messages` is appended per dialect |
+| `providers.<name>.api_key` | Inline key, or |
+| `providers.<name>.api_key_env` | Name of an env var holding the key (resolved at load) |
+| `providers.<name>.model` | Fallback model (default `deepseek-v4-flash`); the session can override it |
+
+See `examples/config.example.json` for a full example.
+
+### Environment variables
+
+Without a config file, the flat env vars define a single default provider
+(`api: "openai"`):
 
 | Variable | Purpose |
 |----------|---------|
-| `OPENAI_API_KEY` | Required. Provider API key (never commit it) |
-| `OPENAI_URL` | Base URL, default `https://api.openai.com/v1`. Point at any OpenAI-compatible endpoint, e.g. `OPENAI_URL=https://api.deepseek.com/v1` for DeepSeek (their Responses API is OpenAI-compatible) |
-| `ACP_LOG` | Log level: `err` / `warn` / `info` / `debug` (default `info`). `debug` traces the system edges — stdio lines (`transport`), provider HTTP requests/bodies/status (`http`), and provider SSE (`provider`) — all on stderr |
+| `OPENAI_API_KEY` | Provider API key (never commit it) |
+| `OPENAI_URL` | Base URL, default `https://api.openai.com/v1` |
+| `OPENAI_MODEL` | Fallback model, default `deepseek-v4-flash` |
+| `ACP_CONFIG` | Path to the JSON provider config (overrides the default XDG path) |
+| `ACP_LOG` | Log level: `err` / `warn` / `info` / `debug` (default `info`) |
 
-**Multi-provider config:** a JSON file (`$ACP_CONFIG` or
-`~/.config/agent-client-protocol/config.json`) declares named providers:
-```json
-{ "default_provider": "deepseek",
-  "providers": {
-    "deepseek": { "api": "openai", "url": "https://api.deepseek.com/v1", "api_key_env": "DEEPSEEK_API_KEY", "model": "deepseek-v4-flash" },
-    "anthropic": { "api": "anthropic", "url": "https://api.anthropic.com", "api_key_env": "ANTHROPIC_API_KEY", "model": "claude-sonnet-4-5" }
-  } }
+### Session configuration (per session)
+
+`session/new` advertises a **model** config option (ACP `configOptions`).
+`session/set_config_option` stores arbitrary key/value pairs on the session —
+the model plus any API knob (`max_tokens`, `temperature`, `system`, …) — which
+are forwarded to the provider request. The provider applies the fields it
+understands and skips the rest with a log. Values are free-form, so newer
+models/knobs work without config changes; invalid values surface as clear
+provider errors at prompt time.
+
+## Logging
+
+All logs go to **stderr** (stdout carries protocol messages only). Set
+`ACP_LOG=debug` to trace everything on the system edge:
+
 ```
-`api` selects the adapter dialect (`openai` Responses API | `anthropic`
-Messages API); `model` is the fallback — the session can override it (or set
-any API knob like `max_tokens`, `temperature`) via `session/set_config_option`.
-Without a file, the flat env vars define a single default provider.
+[transport] https://…  ← every stdio line in/out (the client session)
+[http]      https://api.deepseek.com/v1/responses POST body={...}   ← request
+[http]      https://api.deepseek.com/v1/models 200 body={...}       ← response (non-streaming)
+[provider]  sse: data: {"type":"response.output_text.delta",...}    ← streaming response body
+```
+
+| Scope | Traces |
+|-------|--------|
+| `transport` | Every JSON-RPC line in/out over stdio |
+| `http` | One line per request (`{url} {method} body=…`) and response (`{url} {status} body=…`) |
+| `provider` | Every SSE event/data line of a streaming response |
+| `config` | Config file loading/validation |
+
+Log levels: `debug` enables the traces above; `info` (default) shows
+informational messages; `warn`/`err` reduce noise.
 
 ## Deployment
 
-- **Phase 1:** local development usage
-- **Phase 2:** cross-platform builds (macOS/Windows)
-- **Phase 3 (later):** GitHub Actions CI with release artifacts
+- **Local development** (current)
+- **Cross-platform builds** (macOS/Windows) — verified via `zig build -Dtarget=…`
+- **GitHub Actions** (`.github/workflows/`) — CI matrix (fmt/build/test on
+  linux/mac/windows) and a release workflow (5 cross-compiled targets, packaged
+  and attached on `v*` tags)
 
 ## Project layout
 
 ```
 src/
-├── main.zig          # CLI entry: stdio JSON-RPC 2.0 transport loop
+├── main.zig          # CLI entry: stdio loop + health check + std_options
 ├── root.zig          # library root (public API)
-├── config.zig        # env configuration (API key, model)
-├── protocol/         # ACP: json_rpc framing, types, v1 method handlers
-├── provider/         # adapter interface + OpenAI Responses implementation
-└── util/             # json / http helpers
+├── config.zig        # provider registry (JSON file / env)
+├── protocol/         # ACP: json_rpc framing, v1 types + method handlers
+├── provider/         # adapter interface + openai / anthropic / echo impls
+├── tools/            # server-side tool registry (agent-executed)
+└── util/             # http client wrapper, logging, mock HTTP server (tests)
 ```
