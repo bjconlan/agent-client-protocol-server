@@ -108,8 +108,9 @@ flowchart LR
 
 - e2e with the real fossil client: `tests/fossil-e2e.tcl`
   (`source fossil-agent.tcl` path is hardcoded to
-  `~/Downloads/fossil-linux-x64-2.28/`). Set `OPENAI_API_KEY`/`OPENAI_URL`/
-  `OPENAI_MODEL` (or `ACP_CONFIG`) then `tclsh tests/fossil-e2e.tcl`.
+  `~/Downloads/fossil-linux-x64-2.28/`). Set `ACP_CONFIG` (the config file
+  is required — the server has no env fallback for provider settings) then
+  `tclsh tests/fossil-e2e.tcl`.
 - Example provider config: `examples/config.example.json`.
 - Smoke: pipe JSON-RPC lines into `zig-out/bin/agent_client_protocol` with
   `ACP_CONFIG` + `ACP_LOG=debug` to trace the whole edge chain.

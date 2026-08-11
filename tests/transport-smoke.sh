@@ -15,6 +15,14 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
+# The server requires a config file; use a keyless fixture (health check is
+# skipped without a key, so this exercises the transport only).
+CFG=tests/fixtures/config.json
+if [ ! -f "$CFG" ]; then
+    echo "missing $CFG" >&2
+    exit 1
+fi
+
 INPUT='{"jsonrpc":"2.0","id":1,"method":"test/unknown","params":{}}
 {"jsonrpc":"2.0","id":2,"method":"test/unknown2","params":{}}
 
@@ -28,7 +36,7 @@ EXPECTED='{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not f
 {"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}
 {"jsonrpc":"2.0","id":4,"error":{"code":-32601,"message":"Method not found"}}'
 
-ACTUAL=$(printf '%s\n' "$INPUT" | env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u ACP_CONFIG -u OPENAI_URL -u OPENAI_MODEL "$BIN")
+ACTUAL=$(printf '%s\n' "$INPUT" | ACP_CONFIG="$CFG" "$BIN")
 
 if [ "$ACTUAL" != "$EXPECTED" ]; then
     echo "FAIL: transcript mismatch" >&2
@@ -40,7 +48,7 @@ if [ "$ACTUAL" != "$EXPECTED" ]; then
 fi
 
 # EOF-only input must exit cleanly with no output.
-OUT=$(printf '' | env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u ACP_CONFIG -u OPENAI_URL -u OPENAI_MODEL "$BIN")
+OUT=$(printf '' | ACP_CONFIG="$CFG" "$BIN")
 if [ -n "$OUT" ]; then
     echo "FAIL: expected empty output on EOF-only input" >&2
     exit 1

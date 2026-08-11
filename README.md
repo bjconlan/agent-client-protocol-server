@@ -123,22 +123,19 @@ A JSON config file (from `$ACP_CONFIG` or
 
 See `examples/config.example.json` for a full example.
 
-### Environment variables (quick start)
+### Environment variables
 
-**A config file is not required.** Without one, the flat env vars define a
-single default provider (`api: "openai"`):
+**A config file is required** — all provider settings (keys, URLs, models)
+live there; the server's own env surface is intentionally minimal:
 
 | Variable | Purpose |
 |----------|---------|
-| `OPENAI_API_KEY` | Provider API key (never commit it) |
-| `DEEPSEEK_API_KEY` | Accepted as the default key too (fallback when `OPENAI_API_KEY` is unset) |
-| `OPENAI_URL` | Base URL, default `https://api.openai.com/v1` |
-| `OPENAI_MODEL` | Fallback model, default `deepseek-v4-flash` |
-| `ACP_CONFIG` | Path to the JSON provider config (overrides the default XDG path) |
-| `ACP_LOG` | Log level: `err` / `warn` / `info` / `debug` (default `info`) |
+| `ACP_CONFIG` | Path to the JSON provider config (default `~/.config/agent-client-protocol/config.json`) |
+| `ACP_LOG_LEVEL` | Log level: `err` / `warn` / `info` / `debug` (default `info`) |
 
-If no key is resolvable, a startup warning names the expected variables —
-prompts fail with a clear error until one is set.
+A missing config file is a clear startup error naming the expected path.
+Provider keys come from `api_key` (inline) or `api_key_env` (an env var the
+*config file* references — e.g. `"api_key_env": "DEEPSEEK_API_KEY"`).
 
 ### Session configuration (per session)
 
@@ -166,7 +163,7 @@ provider errors at prompt time.
 ## Logging
 
 All logs go to **stderr** (stdout carries protocol messages only). Set
-`ACP_LOG=debug` to trace everything on the system edge:
+`ACP_LOG_LEVEL=debug` to trace everything on the system edge:
 
 ```
 [transport] https://…  ← every stdio line in/out (the client session)

@@ -42,14 +42,17 @@ pub fn main(init: std.process.Init) !void {
     var env_map = try std.process.Environ.createMap(init.minimal.environ, arena);
     defer env_map.deinit();
     logging.initFromEnv(&env_map);
-    const config = try config_mod.Config.load(io, &env_map, arena);
+    const config = config_mod.Config.load(io, &env_map, arena) catch |err| {
+        std.log.err("configuration load failed: {s}", .{@errorName(err)});
+        std.process.exit(1);
+    };
 
     var http_client: std.http.Client = .{ .allocator = arena, .io = io };
     defer http_client.deinit();
 
     if (config.default()) |provider| {
         if (provider.api_key == null) {
-            std.log.warn("no API key configured — prompts will fail until one is set (OPENAI_API_KEY / DEEPSEEK_API_KEY, or api_key/api_key_env in ACP_CONFIG)", .{});
+            std.log.warn("no API key configured for the default provider — prompts will fail until api_key or api_key_env is set in the config", .{});
         }
         config_mod.healthCheck(provider.*, &http_client, arena) catch |err| {
             std.log.err("provider health check failed: {s} (check the provider config)", .{@errorName(err)});

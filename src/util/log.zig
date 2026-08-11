@@ -2,7 +2,7 @@
 //!
 //! Zig's `std.log` filters by level at compile time (`std.options.log_level`);
 //! the binary sets that to `.debug` and installs `logFn` (below) so the
-//! effective level is chosen at RUNTIME via the `ACP_LOG` env var
+//! effective level is chosen at RUNTIME via the `ACP_LOG_LEVEL` env var
 //! (`err` | `warn` | `info` | `debug`, default `info`).
 //!
 //! Scopes used at the system edges:
@@ -15,12 +15,12 @@
 
 const std = @import("std");
 
-/// The effective runtime level; set once at startup from `ACP_LOG` before any
-/// worker threads spawn.
+/// The effective runtime level; set once at startup from `ACP_LOG_LEVEL`
+/// before any worker threads spawn.
 var runtime_level: std.log.Level = .info;
 
 pub fn initFromEnv(map: *const std.process.Environ.Map) void {
-    const value = map.get("ACP_LOG") orelse return;
+    const value = map.get("ACP_LOG_LEVEL") orelse return;
     if (std.mem.eql(u8, value, "debug")) {
         runtime_level = .debug;
     } else if (std.mem.eql(u8, value, "warn")) {
