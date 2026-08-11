@@ -1,25 +1,39 @@
 name: Release
 
+# Releases build only when a tag is pushed to the repo. Tags are date-time
+# stamps in fossil's snapshot format — YYYYMMDDHHMM or YYYYMMDDHHMMSS (UTC),
+# e.g. 20260801193352. The tag itself is the version in the artifact names.
 on:
   push:
-    tags: ['v*']
+    tags:
+      - '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+      - '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: release (${{ matrix.target }})
+    name: release (${{ matrix.platform }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-linux
-          - aarch64-linux
-          - x86_64-macos
-          - aarch64-macos
-          - x86_64-windows
+        include:
+          - platform: linux-x64
+            target: x86_64-linux-gnu
+          - platform: mac-arm
+            target: aarch64-macos
+          - platform: mac-x64
+            target: x86_64-macos
+          - platform: pi
+            target: aarch64-linux-gnu
+          - platform: w32
+            target: x86-windows-gnu
+          - platform: w64
+            target: x86_64-windows-gnu
+          - platform: win-arm
+            target: aarch64-windows-gnu
     steps:
       - uses: actions/checkout@v4
 
@@ -30,31 +44,52 @@ jobs:
       - name: Test
         run: zig build test --summary all
 
-      - name: Build (${{ matrix.target }})
+      - name: Build (${{ matrix.platform }})
         run: zig build --release=small -Dtarget=${{ matrix.target }}
 
-      - name: Package
+      - name: Package (acps-<platform>-<stamp>)
         shell: bash
         run: |
-          EXT=""
-          [[ "${{ matrix.target }}" == *-windows ]] && EXT=".exe"
-          BIN="zig-out/bin/acps${EXT}"
-          case "${{ matrix.target }}" in
-            *-linux)  ARCHIVE="acps-${{ matrix.target }}.tar.gz"; tar -czf "$ARCHIVE" -C zig-out/bin "$(basename "$BIN")" ;;
-            *-macos)  ARCHIVE="acps-${{ matrix.target }}.tar.gz"; tar -czf "$ARCHIVE" -C zig-out/bin "$(basename "$BIN")" ;;
-            *-windows) ARCHIVE="acps-${{ matrix.target }}.zip"; cd zig-out/bin && zip -q "../../$ARCHIVE" "$(basename "$BIN")" ;;
+          VER="${{ github.ref_name }}"
+          EXE=""
+          case "${{ matrix.platform }}" in
+            w32|w64|win-arm) EXE=".exe"; ARCHIVE="acps-${{ matrix.platform }}-${VER}.zip" ;;
+            *)               ARCHIVE="acps-${{ matrix.platform }}-${VER}.tar.gz" ;;
           esac
+          if [[ "$ARCHIVE" == *.zip ]]; then
+            (cd zig-out/bin && zip -q "$GITHUB_WORKSPACE/$ARCHIVE" "acps${EXE}")
+          else
+            tar -czf "$ARCHIVE" -C zig-out/bin "acps${EXE}"
+          fi
           echo "archive=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: acps-${{ matrix.target }}
-          path: acps-${{ matrix.target }}.*
+          name: acps-${{ matrix.platform }}
+          path: acps-${{ matrix.platform }}-*
+
+  src:
+    name: release (src)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package source tarball (acps-src-<stamp>)
+        run: |
+          VER="${{ github.ref_name }}"
+          git archive --format=tar.gz -o "acps-src-${VER}.tar.gz" HEAD
+          echo "archive=acps-src-${VER}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: acps-src
+          path: acps-src-*
 
   release:
     name: publish release
-    needs: build
+    needs: [build, src]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

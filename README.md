@@ -200,8 +200,13 @@ informational messages; `warn`/`err` reduce noise.
 - **Local development** (current)
 - **Cross-platform builds** (macOS/Windows) — verified via `zig build -Dtarget=…`
 - **GitHub Actions** (`.github/workflows/`) — CI matrix (fmt/build/test on
-  linux/mac/windows) and a release workflow (5 cross-compiled targets, packaged
-  and attached on `v*` tags)
+  linux/mac/windows) and a release workflow that runs only on pushed tags.
+  Tags are date-time stamps in fossil's snapshot format (`YYYYMMDDHHMMSS`,
+  e.g. `20260801193352`); the tag is the version in the artifacts, named
+  fossil-style `acps-<platform>-<stamp>` — `linux-x64`, `mac-arm`, `mac-x64`,
+  `pi`, `src`, `w32`, `w64`, `win-arm` (`.tar.gz` for unix/pi/src, `.zip` for
+  windows). All targets are cross-compiled from the ubuntu runner via
+  `zig build -Dtarget=…`; `src` is a `git archive` tarball.
 
 ## Project layout
 

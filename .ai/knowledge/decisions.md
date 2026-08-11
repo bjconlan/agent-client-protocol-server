@@ -166,3 +166,9 @@ Format:
 **Context:** Project directory renamed `agent-client-protocol` → `agent-client-protocol-server`; user asked for the short name **acps** and to break the old config path.
 **Options considered:** docs-only rename; keep `agent_client_protocol` binary; `~/.config/agent-client-protocol/` unchanged.
 **Outcome:** **Full rename to acps.** Binary/module/package name `acps` (build.zig, build.zig.zon, `@import("acps")`); ACP `agentInfo.name` is now `acps`; default config dir `~/.config/acps/config.json` (breaking — existing configs at the old path must be moved); release artifacts `acps-<target>`. README, architecture.md, glossary, test scripts updated. Historical records (`.ai/feature/*`, backlog) left as-is.
+
+### 2025-08-11 — Release builds: fossil-style artifacts + date-time tags
+
+**Context:** User wanted the GitHub release build to mirror fossil's distribution scheme, replacing "fossil" with "acps", with release builds only on pushed tags and tags reflecting the date-time.
+**Options considered:** keep `v*` tags + generic triple names; auto-build on every push.
+**Outcome:** **fossil-style, tag-gated.** The release workflow triggers only when a tag matching the fossil snapshot date-time format (12- or 14-digit UTC stamp, e.g. `20260801193352`) is pushed; the tag is the version in artifact names `acps-<platform>-<stamp>` for `linux-x64`, `mac-arm`, `mac-x64`, `pi`, `src`, `w32`, `w64`, `win-arm` (`.tar.gz` for unix/pi/src, `.zip` for windows). All binary targets cross-compiled on the ubuntu runner via `zig build -Dtarget=`; `src` is a `git archive` tarball. All 7 target triples verified locally.
