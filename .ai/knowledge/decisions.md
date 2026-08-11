@@ -148,3 +148,15 @@ Format:
 **Context:** Directory structure for the new project.
 **Options considered:** hand-written skeleton vs `zig init` scaffold.
 **Outcome:** **`zig init`** (user-suggested) as the base, then reorganized into `src/protocol/`, `src/provider/`, `src/util/` per the confirmed structure.
+
+### 2025-08-11 — Edge tracing via std.log (ACP_LOG)
+
+**Context:** Need debug visibility of everything on the system edge (client session, provider HTTP) without a third-party logger.
+**Outcome:** `util/log.zig` + a root `std_options.logFn` override in the binary (tests keep Zig defaults). Scopes: `transport` (stdio in/out lines), `http` (one line per exchange — `{url} {method} body=…` request, `{url} {status} body=…` response, URL-first per user preference), `provider` (SSE lines). Runtime level from `ACP_LOG` (err|warn|info|debug, default info). HTTP bodies: non-streaming via `readAll`; streaming via the provider scope.
+
+### 2025-08-11 — http_util fixes found via the trace work
+
+**Context:** Building the trace exposed two real bugs.
+**Outcome:**
+- Authorization header was sent twice (Headers override + extra_headers) → 401s; now one mechanism per auth style (bearer via `Headers.authorization`, x-api-key via extra_headers)
+- The bearer value was freed before the std client lazily flushed the request head → garbage header; value is now arena-owned and documented as such (callers pass arenas)

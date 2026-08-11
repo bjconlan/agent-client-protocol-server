@@ -43,3 +43,32 @@ Project-specific terms and definitions. Add entries as concepts become load-bear
 - **Zig build system** — `build.zig` + `build.zig.zon`; `zig build`, `zig build test`, `zig fetch` for dependencies.
 - **mise** — user-level version manager used to install/pin the Zig toolchain (`mise.toml`).
 - **zig fmt** — canonical Zig formatter; enforced via pre-commit hook (`zig fmt --check`).
+
+## Runtime internals (post-Epic-2)
+
+- **PromptWorker** — per-prompt thread: own arena (process-allocator backed),
+  deep-copied params/id; streams chunks (writer mutex), polls the cancel flag,
+  executes tools agent-side, writes the final response. Joined at EOF.
+- **DeferredResponse** — sentinel error returned by `session/prompt` after
+  spawning: the dispatcher must not write a response (the worker owns the
+  turn's output). Returning it fires errdefers — the worker arena is passed
+  by explicit ownership, never errdefer.
+- **PendingPermission** — single-slot `session/request_permission` handshake:
+  armed synchronously before spawn with an INTEGER request id (1000+; the
+  fossil client serializes string ids as bare tokens → invalid JSON); the
+  main loop routes inbound responses by id.
+- **ApiKind** — adapter discriminator from config `api`: `openai` (Responses
+  API: nested `function` tools, Bearer auth, `reasoning.effort`) | `anthropic`
+  (Messages API: flat tools, `x-api-key` + `anthropic-version`, `max_tokens`
+  required, `tool_use`/`tool_result` blocks). Dispatched via
+  `Context.adapters[@intFromEnum(ApiKind)]`.
+- **Session config KVs** — `session/set_config_option` stores arbitrary
+  configId→value pairs; forwarded to the provider request (`model` required,
+  known knobs applied, unknowns skipped with a log).
+- **ACP_LOG scopes** — `transport` (stdio in/out), `http` (one line per
+  request `{url} {method} body=…` / response `{url} {status} body=…`),
+  `provider` (SSE lines). Runtime level via the env var; binary only.
+- **Zig 0.16 replacements** — `Io.Mutex` (spinlock via `tryLock`+yield),
+  `Io.Clock.now(.real, io)`, `Io.Threaded.init(a, .{}).io()`, `Io.Dir.cwd()`
+  + `readFileAlloc(dir, io, ...)`, `std.testing.io`, `std.process.Environ`
+  (createMap/get), `std.os.linux.*` for nanosleep/clock_gettime.

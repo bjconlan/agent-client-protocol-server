@@ -1,0 +1,23 @@
+{
+  "default_provider": "deepseek",
+  "providers": {
+    "deepseek": {
+      "api": "openai",
+      "url": "https://api.deepseek.com/v1",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-v4-flash"
+    },
+    "deepseek-anthropic": {
+      "api": "anthropic",
+      "url": "https://api.deepseek.com/anthropic",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-v4-flash"
+    },
+    "openai": {
+      "api": "openai",
+      "url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-4o"
+    }
+  }
+}
