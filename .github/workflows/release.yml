@@ -31,7 +31,7 @@ jobs:
         run: zig build test --summary all
 
       - name: Build (${{ matrix.target }})
-        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+        run: zig build --release=small -Dtarget=${{ matrix.target }}
 
       - name: Package
         shell: bash

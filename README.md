@@ -56,8 +56,13 @@ persistence, a Chat Completions adapter.
 ## Building
 
 ```sh
-zig build          # compiles to zig-out/bin/agent_client_protocol
+zig build              # Debug build (dev) → zig-out/bin/agent_client_protocol
+zig build --release    # ReleaseSmall (default release target, ~600 KB) — pass
+                       # --release=fast / --release=safe to override
 ```
+
+`zig build test` always runs the suite in Debug (the testing allocator keeps
+its safety checks); `--release` builds optimize for binary size by default.
 
 The binary is an ACP server: it reads newline-delimited JSON-RPC 2.0 messages
 from stdin and writes responses/notifications to stdout. It waits for a client
@@ -130,12 +135,20 @@ live there; the server's own env surface is intentionally minimal:
 
 | Variable | Purpose |
 |----------|---------|
-| `ACP_CONFIG` | Path to the JSON provider config (default `~/.config/agent-client-protocol/config.json`) |
+| `ACP_CONFIG` | Provider config — a **file path** or **inline JSON** (auto-detected: a leading `{` is taken as the JSON itself, anything else as a path). Defaults to `~/.config/agent-client-protocol/config.json` |
 | `ACP_LOG_LEVEL` | Log level: `err` / `warn` / `info` / `debug` (default `info`) |
 
-A missing config file is a clear startup error naming the expected path.
+For example, inline (handy in k8s — the ConfigMap value *is* the config):
+
+```sh
+ACP_CONFIG='{"providers":{"default":{"api":"openai","url":"https://api.deepseek.com/v1","api_key_env":"DEEPSEEK_API_KEY","model":"deepseek-v4-flash"}}}' \
+  ./zig-out/bin/agent_client_protocol
+```
+
+A missing config is a clear startup error naming the expected source.
 Provider keys come from `api_key` (inline) or `api_key_env` (an env var the
-*config file* references — e.g. `"api_key_env": "DEEPSEEK_API_KEY"`).
+config references — e.g. `"api_key_env": "DEEPSEEK_API_KEY"`), so secrets can
+stay in Secret env vars while the config lives in a ConfigMap.
 
 ### Session configuration (per session)
 

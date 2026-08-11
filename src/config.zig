@@ -52,21 +52,25 @@ pub const Config = struct {
     pub const default_model = "deepseek-v4-flash";
     pub const config_dir = "agent-client-protocol/config.json";
 
-    /// Load the configuration file: explicit `ACP_CONFIG`, else the default
-    /// XDG path. The config file is REQUIRED — all provider settings (keys,
-    /// URLs, models) live there; the server's own env surface is only
-    /// `ACP_CONFIG` and `ACP_LOG_LEVEL`. A missing file is a clear startup
-    /// error, not a silent fallback.
+    /// Load configuration from `ACP_CONFIG` or the default XDG path.
+    ///
+    /// `ACP_CONFIG` dispatches on its first character: a leading `{` is taken
+    /// as the config JSON inline; anything else is a file path. The config
+    /// is REQUIRED — all provider settings (keys, URLs, models) live there;
+    /// the server's own env surface is only `ACP_CONFIG` and `ACP_LOG_LEVEL`.
     pub fn load(io: Io, map: *std.process.Environ.Map, allocator: std.mem.Allocator) !Config {
-        if (map.get("ACP_CONFIG")) |path| {
-            return loadFile(io, allocator, map, path);
+        if (map.get("ACP_CONFIG")) |value| {
+            if (value.len > 0 and value[0] == '{') {
+                return parseConfig(allocator, map, value, "ACP_CONFIG");
+            }
+            return loadFile(io, allocator, map, value);
         }
         if (defaultPath(map, allocator)) |path| {
             if (Io.Dir.accessAbsolute(io, path, .{})) |_| {
                 return loadFile(io, allocator, map, path);
             } else |_| {}
         }
-        std.log.err("no config file found — set ACP_CONFIG or create ~/.config/agent-client-protocol/config.json (see examples/config.example.json)", .{});
+        std.log.err("no config found — set ACP_CONFIG (a file path or inline JSON starting with '{{') or create ~/.config/agent-client-protocol/config.json (see examples/config.example.json)", .{});
         return error.InvalidConfig;
     }
 
@@ -115,19 +119,29 @@ pub fn loadFileAt(
         std.log.warn("config: cannot read '{s}': {s}", .{ sub_path, @errorName(err) });
         return error.InvalidConfig;
     };
+    return parseConfig(allocator, map, raw, sub_path);
+}
 
+/// Parse + validate the config JSON document (`raw`), regardless of whether
+/// it came from a file or inline.
+fn parseConfig(
+    allocator: std.mem.Allocator,
+    map: *std.process.Environ.Map,
+    raw: []const u8,
+    label: []const u8,
+) !Config {
     var scanner = std.json.Scanner.initCompleteInput(allocator, raw);
     const value = std.json.Value.jsonParse(allocator, &scanner, .{
         .allocate = .alloc_always,
         .max_value_len = raw.len,
     }) catch {
-        std.log.warn("config: '{s}' is not valid JSON", .{sub_path});
+        std.log.warn("config: '{s}' is not valid JSON", .{label});
         return error.InvalidConfig;
     };
     const root = switch (value) {
         .object => |o| o,
         else => {
-            std.log.warn("config: '{s}' must be a JSON object", .{sub_path});
+            std.log.warn("config: '{s}' must be a JSON object", .{label});
             return error.InvalidConfig;
         },
     };
@@ -325,4 +339,20 @@ test "loadFileAt: invalid configs rejected" {
     // missing url
     try dir.dir.writeFile(testing.io, .{ .sub_path = "c3.json", .data = "{\"default_provider\":\"x\",\"providers\":{\"x\":{\"api\":\"openai\"}}}" });
     try testing.expectError(error.InvalidConfig, loadFileAt(testing.io, a, &map, dir.dir, "c3.json"));
+}
+
+test "load: ACP_CONFIG inline JSON dispatches on the first character" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var map = try testEnv(a);
+    defer map.deinit();
+    try map.put("ACP_CONFIG", "{\"default_provider\":\"ds\",\"providers\":{\"ds\":{\"api\":\"openai\",\"url\":\"http://x\",\"api_key\":\"sk-inline\",\"model\":\"m\"}}}");
+
+    const cfg = try Config.load(testing.io, &map, a);
+    try testing.expectEqualStrings("ds", cfg.default_provider);
+    const p = cfg.default().?;
+    try testing.expectEqualStrings("sk-inline", p.api_key.?);
+    try testing.expectEqualStrings("m", p.model);
 }
