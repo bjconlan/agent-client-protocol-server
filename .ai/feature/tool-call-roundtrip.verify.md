@@ -53,7 +53,8 @@ Validates the implementation against the plan's verification strategy.
 | Binary wired to openai provider (was echo — F4 gap) | PASS |
 
 ## Exceptions / follow-ups
-- **Live DeepSeek smoke test still outstanding** (F4 follow-up, needs the key)
+- **Live DeepSeek smoke test: DONE** (2025-08-11) — basic prompt + full tool-call round-trip verified live against api.deepseek.com
+- **Genuine fossil-client e2e: DONE** — the real fossil-agent.tcl ACP backend drove our binary (initialize → session/new → prompt → tool call with auto-grant → answer). Found and fixed: fossil string-id serialization (invalid JSON) → integer permission ids; history missing assistant text (back-to-back user messages confused the model) → assistant text accumulated; http Response by-value dangling reader
 - History holds user prompts only; assistant text/tool exchanges are
   within-turn (richer history: Epic 2)
 - Parallel tool calls are executed sequentially (OpenAI may emit several in
