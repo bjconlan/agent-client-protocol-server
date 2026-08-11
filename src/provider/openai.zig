@@ -268,7 +268,12 @@ fn extractUsage(response: std.json.Value) ?adapter.Usage {
         .object => |o| o,
         else => return null,
     };
+    // Some providers (e.g. DeepSeek) report `input_tokens` rather than
+    // OpenAI's `prompt_tokens` — accept both.
     const prompt = if (u.get("prompt_tokens")) |v| switch (v) {
+        .integer => |i| @as(u64, @intCast(@max(i, 0))),
+        else => 0,
+    } else if (u.get("input_tokens")) |v| switch (v) {
         .integer => |i| @as(u64, @intCast(@max(i, 0))),
         else => 0,
     } else 0;
@@ -575,4 +580,22 @@ test "buildBody: tools array includes registry definitions" {
     const fn_obj = first.get("function").?.object;
     try testing.expectEqualStrings("get_current_time", fn_obj.get("name").?.string);
     try testing.expect(fn_obj.get("parameters") != null);
+}
+
+test "usage: input_tokens fallback (DeepSeek-style usage) extracted" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const usage = extractUsage(.{ .object = blk: {
+        var container: std.json.ObjectMap = .empty;
+        var u: std.json.ObjectMap = .empty;
+        try u.put(a, "input_tokens", .{ .integer = 84 });
+        try u.put(a, "output_tokens", .{ .integer = 23 });
+        try u.put(a, "total_tokens", .{ .integer = 107 });
+        try container.put(a, "usage", .{ .object = u });
+        break :blk container;
+    } }).?;
+    try testing.expectEqual(@as(u64, 84), usage.prompt_tokens);
+    try testing.expectEqual(@as(u64, 107), usage.total_tokens);
 }

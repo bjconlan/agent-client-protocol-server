@@ -123,18 +123,22 @@ A JSON config file (from `$ACP_CONFIG` or
 
 See `examples/config.example.json` for a full example.
 
-### Environment variables
+### Environment variables (quick start)
 
-Without a config file, the flat env vars define a single default provider
-(`api: "openai"`):
+**A config file is not required.** Without one, the flat env vars define a
+single default provider (`api: "openai"`):
 
 | Variable | Purpose |
 |----------|---------|
 | `OPENAI_API_KEY` | Provider API key (never commit it) |
+| `DEEPSEEK_API_KEY` | Accepted as the default key too (fallback when `OPENAI_API_KEY` is unset) |
 | `OPENAI_URL` | Base URL, default `https://api.openai.com/v1` |
 | `OPENAI_MODEL` | Fallback model, default `deepseek-v4-flash` |
 | `ACP_CONFIG` | Path to the JSON provider config (overrides the default XDG path) |
 | `ACP_LOG` | Log level: `err` / `warn` / `info` / `debug` (default `info`) |
+
+If no key is resolvable, a startup warning names the expected variables —
+prompts fail with a clear error until one is set.
 
 ### Session configuration (per session)
 
@@ -145,6 +149,19 @@ are forwarded to the provider request. The provider applies the fields it
 understands and skips the rest with a log. Values are free-form, so newer
 models/knobs work without config changes; invalid values surface as clear
 provider errors at prompt time.
+
+## Turn lifecycle & cancellation
+
+- `session/cancel` preempts an in-flight prompt (the worker polls between
+  streamed chunks and answers `stopReason: "cancelled"`). A cancel that
+  arrives before a prompt answers it `cancelled` immediately; the flag is
+  consumed per turn, so the next prompt is unaffected.
+- **Closing stdin mid-turn cancels the prompt** (the server treats EOF as
+  client shutdown: it cancels any in-flight worker and joins it). A client
+  that closes its pipes while a prompt is running gets `stopReason:
+  "cancelled"`.
+- Writes after the client has gone are safe: SIGPIPE is ignored at startup and
+  write errors end the turn quietly (no crash, no stderr spam).
 
 ## Logging
 

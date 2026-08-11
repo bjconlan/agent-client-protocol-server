@@ -215,9 +215,6 @@ fn configOptionsValue(
     session: *types.Session,
     provider: *const config_mod.ProviderConfig,
 ) !std.json.Value {
-    var category: std.json.ObjectMap = .empty;
-    try category.put(allocator, "kind", .{ .string = "model_selector" });
-
     var options_arr: std.json.Array = std.json.Array.init(allocator);
     try options_arr.append(.{ .string = provider.model });
 
@@ -230,7 +227,9 @@ fn configOptionsValue(
     var option: std.json.ObjectMap = .empty;
     try option.put(allocator, "id", .{ .string = "model" });
     try option.put(allocator, "name", .{ .string = "Model" });
-    try option.put(allocator, "category", .{ .object = category });
+    // SessionConfigOptionCategory is a plain string const ("model" = model
+    // selector per the schema).
+    try option.put(allocator, "category", .{ .string = "model" });
     try option.put(allocator, "value", .{ .object = value });
 
     var options: std.json.Array = std.json.Array.init(allocator);
@@ -456,6 +455,7 @@ const PromptWorker = struct {
     assistant: std.ArrayList(u8) = .empty,
 
     fn run(self: *PromptWorker) void {
+        defer self.ctx.cancel_requested.store(false, .monotonic);
         defer self.ctx.worker_done.store(true, .monotonic);
         defer {
             self.arena.deinit();

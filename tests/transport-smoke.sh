@@ -28,7 +28,7 @@ EXPECTED='{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not f
 {"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}
 {"jsonrpc":"2.0","id":4,"error":{"code":-32601,"message":"Method not found"}}'
 
-ACTUAL=$(printf '%s\n' "$INPUT" | "$BIN")
+ACTUAL=$(printf '%s\n' "$INPUT" | env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u ACP_CONFIG -u OPENAI_URL -u OPENAI_MODEL "$BIN")
 
 if [ "$ACTUAL" != "$EXPECTED" ]; then
     echo "FAIL: transcript mismatch" >&2
@@ -40,7 +40,7 @@ if [ "$ACTUAL" != "$EXPECTED" ]; then
 fi
 
 # EOF-only input must exit cleanly with no output.
-OUT=$(printf '' | "$BIN")
+OUT=$(printf '' | env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u ACP_CONFIG -u OPENAI_URL -u OPENAI_MODEL "$BIN")
 if [ -n "$OUT" ]; then
     echo "FAIL: expected empty output on EOF-only input" >&2
     exit 1

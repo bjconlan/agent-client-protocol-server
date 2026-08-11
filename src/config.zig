@@ -218,7 +218,14 @@ fn parseProvider(
 
 /// Env-only fallback: one "default" provider from the flat env vars.
 fn loadEnv(map: *std.process.Environ.Map, allocator: std.mem.Allocator) !Config {
-    const key = if (map.get("OPENAI_API_KEY")) |k| try allocator.dupe(u8, k) else null;
+    // The env-only fallback accepts either OPENAI_API_KEY or DEEPSEEK_API_KEY
+    // (the user's common setup) so prompts work without a config file.
+    const key = if (map.get("OPENAI_API_KEY")) |k|
+        try allocator.dupe(u8, k)
+    else if (map.get("DEEPSEEK_API_KEY")) |k|
+        try allocator.dupe(u8, k)
+    else
+        null;
     const url = try allocator.dupe(u8, map.get("OPENAI_URL") orelse Config.default_base_url);
     const model = try allocator.dupe(u8, map.get("OPENAI_MODEL") orelse Config.default_model);
 
@@ -378,4 +385,17 @@ test "loadFileAt: invalid configs rejected" {
     // missing url
     try dir.dir.writeFile(testing.io, .{ .sub_path = "c3.json", .data = "{\"default_provider\":\"x\",\"providers\":{\"x\":{\"api\":\"openai\"}}}" });
     try testing.expectError(error.InvalidConfig, loadFileAt(testing.io, a, &map, dir.dir, "c3.json"));
+}
+
+test "env fallback: DEEPSEEK_API_KEY resolves the default key" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var map = try testEnv(a);
+    defer map.deinit();
+    try map.put("DEEPSEEK_API_KEY", "sk-ds");
+
+    const cfg = try Config.load(testing.io, &map, a);
+    try testing.expectEqualStrings("sk-ds", cfg.default().?.api_key.?);
 }

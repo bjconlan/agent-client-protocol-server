@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 
 const agent_client_protocol = @import("agent_client_protocol");
@@ -18,7 +19,22 @@ pub const std_options = std.Options{
 /// a key is configured), then runs the transport loop: newline-delimited
 /// JSON-RPC 2.0 messages on stdin, responses/notifications on stdout.
 /// Protocol messages only on stdout; logging goes to stderr.
+/// Ignore SIGPIPE so a write to a closed pipe (the client exiting mid-turn)
+/// returns EPIPE from the write instead of killing the process; the write
+/// paths catch those errors and end the turn quietly.
+fn ignoreSigpipe() void {
+    if (comptime builtin.os.tag != .windows) {
+        var act = std.posix.Sigaction{
+            .handler = .{ .handler = std.posix.SIG.IGN },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.PIPE, &act, null);
+    }
+}
+
 pub fn main(init: std.process.Init) !void {
+    ignoreSigpipe();
     // Process-lifetime allocations.
     const arena: std.mem.Allocator = init.arena.allocator();
     const io = init.io;
@@ -32,6 +48,9 @@ pub fn main(init: std.process.Init) !void {
     defer http_client.deinit();
 
     if (config.default()) |provider| {
+        if (provider.api_key == null) {
+            std.log.warn("no API key configured — prompts will fail until one is set (OPENAI_API_KEY / DEEPSEEK_API_KEY, or api_key/api_key_env in ACP_CONFIG)", .{});
+        }
         config_mod.healthCheck(provider.*, &http_client, arena) catch |err| {
             std.log.err("provider health check failed: {s} (check the provider config)", .{@errorName(err)});
             std.process.exit(1);

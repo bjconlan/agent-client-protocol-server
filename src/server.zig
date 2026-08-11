@@ -337,7 +337,7 @@ test "fossil client flow: initialize → session/new → session/prompt (streame
     ;
     const expected =
         \\{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{},"promptCapabilities":{}},"authMethods":[],"agentInfo":{"name":"agent-client-protocol","version":"0.1.0"}}}
-        \\{"jsonrpc":"2.0","id":2,"result":{"sessionId":"1","configOptions":[{"id":"model","name":"Model","category":{"kind":"model_selector"},"value":{"type":"select","currentValue":"test-model","options":["test-model"]}}]}}
+        \\{"jsonrpc":"2.0","id":2,"result":{"sessionId":"1","configOptions":[{"id":"model","name":"Model","category":"model","value":{"type":"select","currentValue":"test-model","options":["test-model"]}}]}}
         \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}}}
         \\{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}
     ;
@@ -517,4 +517,84 @@ test "worker dispatch: anthropic api provider uses the anthropic adapter slot" {
     try testing.expect(std.mem.indexOf(u8, actual, "\"rawOutput\":\"{}\"") != null);
     try testing.expect(std.mem.indexOf(u8, actual, "\"text\":\"anthropic answered\"") != null);
     try testing.expect(std.mem.indexOf(u8, actual, "\"stopReason\":\"end_turn\"") != null);
+}
+
+/// Slow provider: emits one chunk, waits, then emits another — lets the
+/// test's EOF/cancel land mid-stream deterministically.
+fn slowGenerate(
+    allocator: std.mem.Allocator,
+    input: std.json.Value,
+    prior_outputs: []const std.json.Value,
+    tool_results: []const @import("provider/adapter.zig").ToolResult,
+    options: @import("provider/adapter.zig").Options,
+) anyerror!@import("provider/adapter.zig").Result {
+    _ = allocator;
+    _ = input;
+    _ = prior_outputs;
+    _ = tool_results;
+    try options.emit("first", options.userdata);
+    for (0..100_000) |_| _ = std.Thread.yield() catch {};
+    if (options.is_cancelled(options.userdata)) {
+        return .{ .stop_reason = "cancelled", .usage = null, .tool_calls = &.{}, .output_items = &.{} };
+    }
+    try options.emit("second", options.userdata);
+    return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{}, .output_items = &.{} };
+}
+
+test "EOF mid-prompt cancels the turn" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // prompt is immediately followed by EOF — the loop cancels the in-flight
+    // worker; it has already emitted its first chunk, so the cancel is honored.
+    const input =
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+        \\{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
+        \\{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"1","prompt":[{"type":"text","text":"hello"}]}}
+    ;
+    var fixed_reader = Io.Reader.fixed(input);
+    var out: Io.Writer.Allocating = .init(a);
+    const cfg = testConfig(a);
+
+    var threaded = Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = slowGenerate }, null });
+    const actual = out.written();
+
+    // the first chunk streamed, then the EOF cancel answered cancelled
+    try testing.expect(std.mem.indexOf(u8, actual, "\"text\":\"first\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"stopReason\":\"cancelled\"") != null);
+}
+
+test "prompt after a consumed cancel is not spuriously cancelled" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // cancel before prompt 3 → prompt 3 answers cancelled (sync, flag
+    // consumed). Prompt 4 must NOT answer cancelled at the start — it spawns
+    // a worker and streams (the stale-flag regression would answer
+    // immediately with no chunk).
+    const input =
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+        \\{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
+        \\{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"1"}}
+        \\{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"1","prompt":[{"type":"text","text":"one"}]}}
+        \\{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"1","prompt":[{"type":"text","text":"two"}]}}
+    ;
+    var fixed_reader = Io.Reader.fixed(input);
+    var out: Io.Writer.Allocating = .init(a);
+    const cfg = testConfig(a);
+
+    var threaded = Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = slowGenerate }, null });
+    const actual = out.written();
+
+    // prompt 3: cancelled synchronously
+    try testing.expect(std.mem.indexOf(u8, actual, "\"id\":3,\"result\":{\"stopReason\":\"cancelled\"}") != null);
+    // prompt 4: NOT cancelled at the start — its worker ran and streamed a
+    // chunk (the stale-flag bug would answer cancelled with no chunk).
+    try testing.expect(std.mem.indexOf(u8, actual, "\"text\":\"first\"") != null);
 }
