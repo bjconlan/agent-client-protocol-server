@@ -172,10 +172,9 @@ sequenceDiagram
 
 ## Status
 
-- **Stage:** 2 (Implementation)
-- **Current unit:** 6 (Conformance)
-- **Last checkpoint:** Units 1–5 done — tool registry, provider tools/function_call, permission routing, worker multi-call loop, session history; 47/47 tests
-- **Next action:** commit, then review
+- **Stage:** 3 (Review) — see Outcomes below. Live DeepSeek smoke test DONE (basic + tool round-trip); integration fixes committed (7c51300)
+- **Current unit:** —
+- **Last checkpoint:** 47/47 tests; cross-compiles linux/mac/windows
 
 ---
 

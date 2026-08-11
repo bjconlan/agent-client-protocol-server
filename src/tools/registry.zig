@@ -20,9 +20,11 @@ pub const Tool = struct {
     parameters: []const u8,
     /// Execute the tool with the given JSON args; returns result text.
     /// Failures are converted to "ERROR: ..." text by the caller (the client
-    /// `_safeCall` pattern), so the model can recover.
+    /// `_safeCall` pattern), so the model can recover. `io` is provided for
+    /// providers that need it (e.g. the clock).
     execute: *const fn (
         allocator: std.mem.Allocator,
+        io: std.Io,
         args_json: []const u8,
     ) anyerror![]const u8,
 };
@@ -47,8 +49,10 @@ pub const registry = [_]Tool{
 /// Return the arguments JSON verbatim (deterministic — used in tests).
 fn echoArgs(
     allocator: std.mem.Allocator,
+    io: std.Io,
     args_json: []const u8,
 ) anyerror![]const u8 {
+    _ = io;
     return allocator.dupe(u8, args_json);
 }
 
@@ -63,12 +67,12 @@ pub fn lookup(name: []const u8) ?*const Tool {
 /// Return the current UTC time as an ISO 8601 string.
 fn getCurrentTime(
     allocator: std.mem.Allocator,
+    io: std.Io,
     args_json: []const u8,
 ) anyerror![]const u8 {
     _ = args_json;
-    var tp: std.posix.timespec = undefined;
-    _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.REALTIME, &tp);
-    const epoch: u64 = @intCast(tp.sec);
+    const ts = std.Io.Clock.now(.real, io);
+    const epoch: u64 = @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s));
     const es = std.time.epoch.EpochSeconds{ .secs = epoch };
     const ds = es.getDaySeconds();
     const yd = es.getEpochDay().calculateYearDay();
@@ -101,16 +105,19 @@ test "get_current_time returns a valid ISO 8601 UTC timestamp" {
     const a = arena.allocator();
 
     const tool = lookup("get_current_time").?;
-    const out = try tool.execute(a, "{}");
+    var threaded = std.Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const out = try tool.execute(a, io, "{}");
     // YYYY-MM-DDTHH:MM:SSZ
     try testing.expectEqual(@as(usize, 20), out.len);
     try testing.expect(out[4] == '-' and out[7] == '-' and out[10] == 'T' and out[19] == 'Z');
-    var tp: std.posix.timespec = undefined;
-    _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.REALTIME, &tp);
-    // the tool's time should be within a minute of now
-    const now: u64 = @intCast(tp.sec);
-    var buf: [64]u8 = undefined;
-    const parsed = std.fmt.bufPrint(&buf, "{s}", .{out}) catch unreachable;
-    _ = parsed;
-    _ = now;
+    // the tool's year should match the current year
+    const ts = std.Io.Clock.now(.real, io);
+    const now: u64 = @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s));
+    const es = std.time.epoch.EpochSeconds{ .secs = now };
+    const current_year = es.getEpochDay().calculateYearDay().year;
+    const parsed_year = std.fmt.parseInt(i64, out[0..4], 10) catch return error.TestUnexpectedResult;
+    const tool_year: u64 = @intCast(parsed_year);
+    try testing.expect(tool_year == current_year);
 }

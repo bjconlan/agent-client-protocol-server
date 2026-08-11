@@ -49,6 +49,7 @@ pub fn run(
     defer http_client.deinit();
 
     var ctx = methods_v1.Context{
+        .io = io,
         .sessions = &session_store,
         .writer = writer,
         .writer_lock = &writer_lock,

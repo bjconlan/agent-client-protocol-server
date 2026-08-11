@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: release (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux
+          - aarch64-linux
+          - x86_64-macos
+          - aarch64-macos
+          - x86_64-windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: Test
+        run: zig build test --summary all
+
+      - name: Build (${{ matrix.target }})
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+
+      - name: Package
+        shell: bash
+        run: |
+          EXT=""
+          [[ "${{ matrix.target }}" == *-windows ]] && EXT=".exe"
+          BIN="zig-out/bin/agent_client_protocol${EXT}"
+          case "${{ matrix.target }}" in
+            *-linux)  ARCHIVE="acp-server-${{ matrix.target }}.tar.gz"; tar -czf "$ARCHIVE" -C zig-out/bin "$(basename "$BIN")" ;;
+            *-macos)  ARCHIVE="acp-server-${{ matrix.target }}.tar.gz"; tar -czf "$ARCHIVE" -C zig-out/bin "$(basename "$BIN")" ;;
+            *-windows) ARCHIVE="acp-server-${{ matrix.target }}.zip"; cd zig-out/bin && zip -q "../../$ARCHIVE" "$(basename "$BIN")" ;;
+          esac
+          echo "archive=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: acp-server-${{ matrix.target }}
+          path: acp-server-${{ matrix.target }}.*
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

@@ -50,6 +50,7 @@ pub const PendingPermission = struct {
 /// Server context threaded through handlers: session store, stdout writer
 /// (for streaming notifications), provider, and shared async state.
 pub const Context = struct {
+    io: Io,
     sessions: *types.SessionStore,
     writer: *Io.Writer,
     writer_lock: *std.atomic.Mutex,
@@ -489,7 +490,7 @@ const PromptWorker = struct {
         }
 
         self.reportToolCall(allocator, call, tool, "in_progress");
-        const result = tool.execute(allocator, call.arguments) catch |err| blk: {
+        const result = tool.execute(allocator, self.ctx.io, call.arguments) catch |err| blk: {
             const msg = std.fmt.allocPrint(allocator, "ERROR: {s}", .{@errorName(err)}) catch break :blk "ERROR";
             break :blk msg;
         };
@@ -531,8 +532,8 @@ const PromptWorker = struct {
             self.ctx.permission.mutex.unlock();
             if (done) return granted;
             if (self.ctx.cancel_requested.load(.monotonic)) return false;
-            const ts = std.posix.timespec{ .sec = 0, .nsec = 1_000_000 };
-            _ = std.os.linux.nanosleep(&ts, null);
+            // Portable-ish wait: yield ~1ms (no cross-platform nanosleep).
+            for (0..100) |_| _ = std.Thread.yield() catch {};
             waited += 1;
             if (waited > 10_000) {
                 std.log.warn("session/request_permission: timeout waiting for response", .{});
@@ -759,7 +760,10 @@ fn testContext(a: std.mem.Allocator, writer: *Io.Writer) !*Context {
     const http = try a.create(std.http.Client);
     http.* = undefined;
     const ctx = try a.create(Context);
+    const threaded = try a.create(std.Io.Threaded);
+    threaded.* = std.Io.Threaded.init(a, .{});
     ctx.* = .{
+        .io = threaded.io(),
         .sessions = store,
         .writer = writer,
         .writer_lock = mutex,
