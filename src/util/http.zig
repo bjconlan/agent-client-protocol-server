@@ -5,6 +5,7 @@
 //! client is owned by the caller and reused across requests.
 
 const std = @import("std");
+const Io = std.Io;
 
 /// Provider API errors, classified from HTTP status / transport failures.
 pub const Error = error{
@@ -65,6 +66,12 @@ pub fn request(
 ) Error!*Response {
     const uri = std.Uri.parse(url_text) catch return error.Network;
     const body = options.body;
+    std.log.scoped(.http).debug("{s} {s} (auth: {s})", .{
+        if (body == null) "GET" else "POST",
+        url_text,
+        @tagName(options.auth),
+    });
+    if (body) |b| std.log.scoped(.http).debug("  body: {s}", .{b});
 
     // Auth header: `Authorization: Bearer <key>` or `x-api-key: <key>`, plus
     // any extra headers, assembled into a single extra_headers slice (the
@@ -74,10 +81,11 @@ pub fn request(
     var bearer_text: []u8 = undefined;
     switch (options.auth) {
         .bearer => {
+            // Set via Request.Headers.authorization below (single header).
+            // NOTE: not freed here — the std client reads the header value
+            // lazily (head flush can happen after this returns); callers pass
+            // arenas, which reclaim it.
             bearer_text = std.fmt.allocPrint(allocator, "Bearer {s}", .{api_key}) catch return error.Network;
-            defer allocator.free(bearer_text);
-            headers_buf[header_count] = .{ .name = "authorization", .value = bearer_text };
-            header_count += 1;
         },
         .x_api_key => {
             headers_buf[header_count] = .{ .name = "x-api-key", .value = api_key };
@@ -105,7 +113,7 @@ pub fn request(
                 .authorization = if (options.auth == .bearer) .{ .override = bearer_text } else .default,
                 .content_type = if (body != null) .{ .override = "application/json" } else .default,
             },
-            .extra_headers = headers_buf[0..header_count],
+            .extra_headers = if (header_count > 0) headers_buf[0..header_count] else &.{},
         },
     ) catch return error.Network;
     errdefer self.req.deinit();
@@ -123,6 +131,7 @@ pub fn request(
     var redirect_buffer: [64]u8 = undefined;
     self.response = self.req.receiveHead(&redirect_buffer) catch return error.Network;
     const status = self.response.head.status;
+    std.log.scoped(.http).debug("  status: {d}", .{@intFromEnum(status)});
 
     if (status.class() != .success) {
         switch (status) {
@@ -180,4 +189,29 @@ test "url: joins base and path without double slashes" {
         "https://api.deepseek.com/v1/models",
         try url(a, "https://api.deepseek.com/v1", "/models"),
     );
+}
+
+test "bearer auth sends a single Authorization header" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var threaded = Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var http: std.http.Client = .{ .allocator = a, .io = io };
+    defer http.deinit();
+
+    var mock = try @import("mock_http.zig").Mock.start(io, a, "HTTP/1.1 200 OK", "ok");
+    defer mock.deinit();
+
+    const url_text = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}/models", .{mock.port()});
+    defer a.free(url_text);
+
+    var resp = try request(&http, a, url_text, "sk-test", .{});
+    defer resp.deinit();
+    const body = try readAll(a, resp.reader);
+    try testing.expectEqualStrings("ok", body);
+
+    try testing.expect(std.mem.indexOf(u8, mock.request.items, "authorization: Bearer sk-test") != null);
 }

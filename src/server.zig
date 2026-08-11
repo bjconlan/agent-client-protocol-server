@@ -81,6 +81,7 @@ pub fn run(
             },
         } orelse break; // EOF
 
+        std.log.scoped(.transport).debug("[in] {s}", .{line});
         if (line.len == 0) continue; // transport-level keepalive line
 
         const message = json_rpc.parseLine(msg_alloc, line) catch |err| switch (err) {
@@ -118,6 +119,7 @@ fn dispatch(
     switch (message) {
         .request => |r| {
             if (methods_v1.lookup(r.method)) |handler| {
+                std.log.scoped(.transport).debug("[out] response for id {any} method {s}", .{ r.id, r.method });
                 const result = handler(ctx, allocator, r.id, r.params) catch |err| switch (err) {
                     error.DeferredResponse => return, // worker writes the output
                     else => {

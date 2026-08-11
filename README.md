@@ -84,8 +84,21 @@ MVP has no config file. Provider settings come from environment:
 |----------|---------|
 | `OPENAI_API_KEY` | Required. Provider API key (never commit it) |
 | `OPENAI_URL` | Base URL, default `https://api.openai.com/v1`. Point at any OpenAI-compatible endpoint, e.g. `OPENAI_URL=https://api.deepseek.com/v1` for DeepSeek (their Responses API is OpenAI-compatible) |
+| `ACP_LOG` | Log level: `err` / `warn` / `info` / `debug` (default `info`). `debug` traces the system edges — stdio lines (`transport`), provider HTTP requests/bodies/status (`http`), and provider SSE (`provider`) — all on stderr |
 
-Model selection and further options arrive with the first feature.
+**Multi-provider config:** a JSON file (`$ACP_CONFIG` or
+`~/.config/agent-client-protocol/config.json`) declares named providers:
+```json
+{ "default_provider": "deepseek",
+  "providers": {
+    "deepseek": { "api": "openai", "url": "https://api.deepseek.com/v1", "api_key_env": "DEEPSEEK_API_KEY", "model": "deepseek-v4-flash" },
+    "anthropic": { "api": "anthropic", "url": "https://api.anthropic.com", "api_key_env": "ANTHROPIC_API_KEY", "model": "claude-sonnet-4-5" }
+  } }
+```
+`api` selects the adapter dialect (`openai` Responses API | `anthropic`
+Messages API); `model` is the fallback — the session can override it (or set
+any API knob like `max_tokens`, `temperature`) via `session/set_config_option`.
+Without a file, the flat env vars define a single default provider.
 
 ## Deployment
 

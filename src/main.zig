@@ -3,6 +3,14 @@ const Io = std.Io;
 
 const agent_client_protocol = @import("agent_client_protocol");
 const config_mod = agent_client_protocol.config;
+const logging = agent_client_protocol.util.log;
+
+/// Enable all levels at compile time; `util/log.zig` filters at runtime via
+/// the `ACP_LOG` env var.
+pub const std_options = std.Options{
+    .log_level = .debug,
+    .logFn = logging.logFn,
+};
 
 /// ACP server entry point.
 ///
@@ -17,6 +25,7 @@ pub fn main(init: std.process.Init) !void {
 
     var env_map = try std.process.Environ.createMap(init.minimal.environ, arena);
     defer env_map.deinit();
+    logging.initFromEnv(&env_map);
     const config = try config_mod.Config.load(io, &env_map, arena);
 
     var http_client: std.http.Client = .{ .allocator = arena, .io = io };

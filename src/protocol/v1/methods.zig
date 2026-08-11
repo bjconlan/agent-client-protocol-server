@@ -679,6 +679,7 @@ const PromptWorker = struct {
         tool: *const tools_registry.Tool,
         status: []const u8,
     ) void {
+        std.log.scoped(.transport).debug("[out] session/update tool {s} {s}", .{ status, tool.name });
         var update: std.json.ObjectMap = .empty;
         defer update.deinit(allocator);
         update.put(allocator, "sessionUpdate", .{ .string = if (std.mem.eql(u8, status, "pending")) "tool_call" else "tool_call_update" }) catch return;
@@ -703,6 +704,7 @@ const PromptWorker = struct {
         call: adapter.ToolCall,
         result: []const u8,
     ) void {
+        std.log.scoped(.transport).debug("[out] session/update tool completed", .{});
         var update: std.json.ObjectMap = .empty;
         defer update.deinit(allocator);
         update.put(allocator, "sessionUpdate", .{ .string = "tool_call_update" }) catch return;
@@ -739,6 +741,7 @@ const PromptWorker = struct {
 
     /// Emit a `usage_update` notification (schema: used/size).
     fn writeUsage(self: *PromptWorker, usage: adapter.Usage) void {
+        std.log.scoped(.transport).debug("[out] session/update usage {d}/{d}", .{ usage.prompt_tokens, usage.total_tokens });
         var params: std.json.ObjectMap = .empty;
         defer params.deinit(self.arena.allocator());
         params.put(self.arena.allocator(), "sessionId", .{ .string = self.session_id }) catch return;
@@ -755,11 +758,13 @@ const PromptWorker = struct {
 
     /// Write the final response (with lock).
     fn writeResponse(self: *PromptWorker, result: std.json.Value) void {
+        std.log.scoped(.transport).debug("[out] prompt response", .{});
         self.writeLocked(json_rpc.serializeResponse(self.arena.allocator(), self.ctx.writer, self.id, result));
     }
 
     /// Write an error response (with lock).
     fn writeError(self: *PromptWorker, code: i32, message: []const u8) void {
+        std.log.scoped(.transport).debug("[out] prompt error {d} {s}", .{ code, message });
         self.writeLocked(json_rpc.serializeError(self.arena.allocator(), self.ctx.writer, self.id, .{
             .code = code,
             .message = message,
@@ -865,6 +870,7 @@ fn emitMessageChunk(
     try params.put(allocator, "sessionId", .{ .string = session_id });
     try params.put(allocator, "update", .{ .object = update });
 
+    std.log.scoped(.transport).debug("[out] session/update agent_message_chunk: {s}", .{text});
     try json_rpc.serializeNotification(allocator, ctx.writer, "session/update", .{ .object = params });
     try ctx.writer.writeAll("\n");
     try ctx.writer.flush();

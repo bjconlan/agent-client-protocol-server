@@ -206,6 +206,7 @@ fn parseStream(
         if (trimmed[0] == ':') continue; // comment
 
         const payload = std.mem.trimStart(u8, trimmed, " ");
+        std.log.scoped(.provider).debug("sse: {s}", .{trimmed});
         const data = if (std.mem.startsWith(u8, payload, "data:"))
             std.mem.trimStart(u8, payload["data:".len..], " ")
         else
