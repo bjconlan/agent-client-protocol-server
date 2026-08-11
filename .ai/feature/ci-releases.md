@@ -71,4 +71,4 @@ package registries.
 - README: deployment section notes GitHub Actions releases (Phase 3)
 
 ## Status
-- **Stage:** 3 (Review) — see Status above
+- **Stage:** 4 (Complete — merged to main as `706a7d2`) — see Status above
