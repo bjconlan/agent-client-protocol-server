@@ -64,6 +64,18 @@ Format:
 - **Session history:** in-memory per-session accumulation (~20 messages) so the agent holds context (ACP model — the client sends only the new prompt)
 - **HTTP timeout:** provider request timeout included (F4 follow-up)
 
+### 2025-08-11 — Epic 2 F1: multi-provider config + session model config
+
+**Context:** Epic 2 planning; user deferred ACP v2 (schema is 2.0.0-alpha.2, providers/* unstable) and chose multi-provider config built around the provider concept. Empirical DeepSeek probes (2025-08-11): model is required with no fallback (invalid → clear error); `reasoning.effort` is optional (omitted → model decides).
+**Outcome:**
+- **Config file (JSON, stdlib):** `~/.config/agent-client-protocol/config.json` (or `ACP_CONFIG`); `{default_provider, providers: {name: {api, url, api_key|api_key_env, models[]}}}`; `models[]` required ≥1, **first = default model**; `api` discriminates adapters (`openai` now, `anthropic` → AdapterNotImplemented until that feature)
+- **Effort dropped** from config + adapter (API falls back to the model's choice); re-add as a one-line change if wanted
+- **Session model config (ACP v1 native):** `session/new` advertises a `model` select (SessionConfigSelect) from provider models; `session/set_config_option` sets session.model; prompt uses `session.model orelse models[0]` — the stable-v1 multi-LLM mechanism (no v2 dependency)
+- **Backward compat:** no config file → env vars define the default provider (`api: openai`, `models: [OPENAI_MODEL || deepseek-v4-flash]`)
+- **Health check:** default provider at startup; others lazy
+- **v2 note:** the provider registry is shaped to map to the stabilized v2 `providers/*` methods later
+
+
 ### 2025-08-10 — F4: OpenAI Responses adapter + cancellation architecture
 
 **Context:** F4 planning; user confirmed config vars incl. model + effort (target `deepseek-v4-flash`, `high`), lazy-fail on missing key, startup auth/health validation.

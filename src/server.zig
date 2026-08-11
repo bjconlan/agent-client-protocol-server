@@ -245,14 +245,22 @@ fn expectRun(input: []const u8, expected: []const u8) !void {
 
     var fixed_reader = Io.Reader.fixed(input);
     var out: Io.Writer.Allocating = .init(a);
-    const cfg = @import("config.zig").Config{
-        .api_key = "test-key",
-        .base_url = "http://127.0.0.1:1",
-        .model = "test-model",
-        .effort = "high",
-    };
+    const cfg = testConfig(a);
     try run(io, &fixed_reader, &out.writer, a, cfg, .{ .generate = echo.generate });
     try testing.expectEqualStrings(expected, out.written());
+}
+
+/// Test config: one "default" openai provider.
+fn testConfig(a: std.mem.Allocator) @import("config.zig").Config {
+    const providers = a.alloc(@import("config.zig").ProviderConfig, 1) catch unreachable;
+    providers[0] = .{
+        .name = "default",
+        .api = .openai,
+        .url = "http://127.0.0.1:1",
+        .api_key = "test-key",
+        .model = "test-model",
+    };
+    return .{ .default_provider = "default", .providers = providers };
 }
 
 test "transcript: requests answer method-not-found with verbatim ids" {
@@ -327,7 +335,7 @@ test "fossil client flow: initialize → session/new → session/prompt (streame
     ;
     const expected =
         \\{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{},"promptCapabilities":{}},"authMethods":[],"agentInfo":{"name":"agent-client-protocol","version":"0.1.0"}}}
-        \\{"jsonrpc":"2.0","id":2,"result":{"sessionId":"1"}}
+        \\{"jsonrpc":"2.0","id":2,"result":{"sessionId":"1","configOptions":[{"id":"model","name":"Model","category":{"kind":"model_selector"},"value":{"type":"select","currentValue":"test-model","options":["test-model"]}}]}}
         \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}}}
         \\{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}
     ;
@@ -373,12 +381,7 @@ test "tool-call round-trip: echo tool, permission granted, result fed back" {
     ;
     var fixed_reader = Io.Reader.fixed(input);
     var out: Io.Writer.Allocating = .init(a);
-    const cfg = @import("config.zig").Config{
-        .api_key = "test-key",
-        .base_url = "http://127.0.0.1:1",
-        .model = "test-model",
-        .effort = "high",
-    };
+    const cfg = testConfig(a);
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
@@ -397,4 +400,64 @@ test "tool-call round-trip: echo tool, permission granted, result fed back" {
     // final answer + response
     try testing.expect(std.mem.indexOf(u8, actual, "\"text\":\"it is now done\"") != null);
     try testing.expect(std.mem.indexOf(u8, actual, "\"stopReason\":\"end_turn\"") != null);
+}
+
+/// Records the model + config KVs it receives (for session-config assertions).
+var fake_seen_model: []const u8 = "";
+var fake_seen_kvs: std.ArrayList([]const u8) = .empty;
+
+fn configRecordingGenerate(
+    allocator: std.mem.Allocator,
+    input: std.json.Value,
+    prior_outputs: []const std.json.Value,
+    tool_results: []const @import("provider/adapter.zig").ToolResult,
+    options: @import("provider/adapter.zig").Options,
+) anyerror!@import("provider/adapter.zig").Result {
+    _ = allocator;
+    _ = input;
+    _ = prior_outputs;
+    _ = tool_results;
+    for (options.config) |kv| {
+        if (std.mem.eql(u8, kv.key, "model")) {
+            fake_seen_model = kv.value;
+        } else {
+            fake_seen_kvs.append(std.heap.page_allocator, kv.value) catch {};
+        }
+    }
+    try options.emit("ok", options.userdata);
+    return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{}, .output_items = &.{} };
+}
+
+test "session config: set_config_option updates model, prompt uses it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    fake_seen_model = "";
+    fake_seen_kvs = .empty;
+    defer fake_seen_kvs.deinit(std.heap.page_allocator);
+
+    const input =
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+        \\{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
+        \\{"jsonrpc":"2.0","id":3,"method":"session/set_config_option","params":{"sessionId":"1","configId":"model","value":{"value":"new-model"}}}
+        \\{"jsonrpc":"2.0","id":4,"method":"session/set_config_option","params":{"sessionId":"1","configId":"temperature","value":{"value":"0.7"}}}
+        \\{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"1","prompt":[{"type":"text","text":"hello"}]}}
+    ;
+    var fixed_reader = Io.Reader.fixed(input);
+    var out: Io.Writer.Allocating = .init(a);
+    const cfg = testConfig(a);
+
+    var threaded = Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .generate = configRecordingGenerate });
+    const actual = out.written();
+
+    // set_config_option responses reflect the updated currentValue
+    try testing.expect(std.mem.indexOf(u8, actual, "\"currentValue\":\"new-model\"") != null);
+    // the prompt used the session model + forwarded the arbitrary knob
+    try testing.expectEqualStrings("new-model", fake_seen_model);
+    try testing.expect(std.mem.indexOf(u8, fake_seen_kvs.items[0], "0.7") != null);
+    // session/new advertised the fallback model
+    try testing.expect(std.mem.indexOf(u8, actual, "\"currentValue\":\"test-model\"") != null);
 }

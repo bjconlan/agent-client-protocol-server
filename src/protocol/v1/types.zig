@@ -21,6 +21,12 @@ pub const HistoryMessage = struct {
 pub const Session = struct {
     id: []const u8,
     cwd: []const u8,
+    /// The provider serving this session (from the server config).
+    provider_name: []const u8,
+    /// Session configuration: configId → value (from
+    /// `session/set_config_option`), forwarded to the provider request.
+    /// Keys/values are owned by the store's allocator.
+    config: std.StringHashMap([]const u8),
     /// Recent user prompts + assistant text (last ~20), appended by the
     /// prompt worker. Strings are owned by the store's allocator.
     history: std.ArrayList(HistoryMessage) = .empty,
@@ -49,13 +55,15 @@ pub const SessionStore = struct {
     /// Create a session, assigning the next monotonic id ("1", "2", …).
     /// Keys/values are allocated from the store's own allocator so they
     /// survive per-message arena resets.
-    pub fn create(self: *SessionStore, cwd: []const u8) !*Session {
+    pub fn create(self: *SessionStore, cwd: []const u8, provider_name: []const u8) !*Session {
         const id = try std.fmt.allocPrint(self.allocator, "{d}", .{self.next_id});
         self.next_id += 1;
         const session = try self.allocator.create(Session);
         session.* = .{
             .id = id,
             .cwd = try self.allocator.dupe(u8, cwd),
+            .provider_name = try self.allocator.dupe(u8, provider_name),
+            .config = std.StringHashMap([]const u8).init(self.allocator),
         };
         try self.map.put(id, session.*);
         return session;
@@ -85,8 +93,8 @@ test "store: create assigns monotonic ids, get retrieves" {
     var store = SessionStore.init(a);
     defer store.deinit();
 
-    const s1 = try store.create("/tmp");
-    const s2 = try store.create("/home");
+    const s1 = try store.create("/tmp", "default");
+    const s2 = try store.create("/home", "default");
     try testing.expectEqualStrings("1", s1.id);
     try testing.expectEqualStrings("2", s2.id);
     try testing.expectEqualStrings("/tmp", s1.cwd);

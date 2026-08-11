@@ -31,10 +31,11 @@ pub fn generate(
     tool_results: []const adapter.ToolResult,
     options: Options,
 ) GenerateError!Result {
-    const body = try buildBody(allocator, options.config, input, prior_outputs, tool_results, options.tools);
+    const flat_tools = std.mem.indexOf(u8, options.base_url, "deepseek.com") != null;
+    const body = try buildBody(allocator, options.config, flat_tools, input, prior_outputs, tool_results, options.tools);
     defer allocator.free(body);
 
-    const url = try http_util.url(allocator, options.config.base_url, "/responses");
+    const url = try http_util.url(allocator, options.base_url, "/responses");
     defer allocator.free(url);
 
     var response = try http_util.request(options.http, allocator, url, options.api_key, body);
@@ -43,10 +44,11 @@ pub fn generate(
     return parseStream(allocator, response.reader, options);
 }
 
-/// Build the /responses request body.
+/// Build the /responses request body from the session config KVs.
 fn buildBody(
     allocator: std.mem.Allocator,
-    config: *const config_mod.Config,
+    config: []const adapter.ConfigKV,
+    flat_tools: bool,
     input_value: std.json.Value,
     prior_outputs: []const std.json.Value,
     tool_results: []const adapter.ToolResult,
@@ -70,8 +72,7 @@ fn buildBody(
 
     // tools param from the registry definitions. OpenAI nests the function
     // under a `function` object; DeepSeek's Responses API uses the flat
-    // shape (name at the top level) — detected by host.
-    const flat_tools = std.mem.indexOf(u8, config.base_url, "deepseek.com") != null;
+    // shape (name at the top level).
     var tools_arr: std.json.Array = std.json.Array.init(allocator);
     defer tools_arr.deinit();
     for (tools_defs) |tool| {
@@ -96,20 +97,41 @@ fn buildBody(
         try tools_arr.append(.{ .object = tool_obj });
     }
 
-    var reasoning: std.json.ObjectMap = .empty;
-    try reasoning.put(allocator, "effort", .{ .string = config.effort });
-
     var stream_options: std.json.ObjectMap = .empty;
     try stream_options.put(allocator, "include_usage", .{ .bool = true });
 
     var root: std.json.ObjectMap = .empty;
     errdefer root.deinit(allocator);
-    try root.put(allocator, "model", .{ .string = config.model });
     try root.put(allocator, "input", .{ .array = input });
     try root.put(allocator, "tools", .{ .array = tools_arr });
-    try root.put(allocator, "reasoning", .{ .object = reasoning });
     try root.put(allocator, "stream", .{ .bool = true });
     try root.put(allocator, "stream_options", .{ .object = stream_options });
+
+    // Session config KVs → request fields. `model` is required; known knobs
+    // (reasoning.effort, temperature, max_output_tokens, top_p, instructions)
+    // are applied; unknown keys are logged and skipped.
+    var saw_model = false;
+    for (config) |kv| {
+        if (std.mem.eql(u8, kv.key, "model")) {
+            try root.put(allocator, "model", .{ .string = kv.value });
+            saw_model = true;
+        } else if (std.mem.eql(u8, kv.key, "reasoning.effort")) {
+            var reasoning: std.json.ObjectMap = .empty;
+            try reasoning.put(allocator, "effort", .{ .string = kv.value });
+            try root.put(allocator, "reasoning", .{ .object = reasoning });
+        } else if (std.mem.eql(u8, kv.key, "temperature")) {
+            root.put(allocator, "temperature", .{ .float = std.fmt.parseFloat(f64, kv.value) catch continue }) catch {};
+        } else if (std.mem.eql(u8, kv.key, "max_output_tokens")) {
+            root.put(allocator, "max_output_tokens", .{ .integer = std.fmt.parseInt(i64, kv.value, 10) catch continue }) catch {};
+        } else if (std.mem.eql(u8, kv.key, "top_p")) {
+            root.put(allocator, "top_p", .{ .float = std.fmt.parseFloat(f64, kv.value) catch continue }) catch {};
+        } else if (std.mem.eql(u8, kv.key, "instructions")) {
+            try root.put(allocator, "instructions", .{ .string = kv.value });
+        } else {
+            std.log.warn("openai: unknown session config '{s}' — skipped", .{kv.key});
+        }
+    }
+    if (!saw_model) return error.MissingApiKey;
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -286,16 +308,16 @@ test "parseStream: delta events emit chunks, completed returns end_turn" {
 
     const chunks = try a.create(std.ArrayList([]const u8));
     chunks.* = .empty;
-    var cfg = config_mod.Config{ .api_key = null, .base_url = "http://x", .model = "m", .effort = "high" };
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
     var http: std.http.Client = .{ .allocator = a, .io = threaded.io() };
 
     const result = try parseStream(a, &fixed, .{
-        .config = &cfg,
+        .base_url = "http://x",
         .http = &http,
         .tools = &.{},
         .api_key = "k",
+        .config = &.{},
         .emit = emit_collect.collect,
         .is_cancelled = struct {
             fn c(_: ?*anyopaque) bool {
@@ -324,17 +346,17 @@ test "parseStream: cancelled mid-stream returns cancelled" {
     ;
     var fixed = std.Io.Reader.fixed(stream);
 
-    const cfg = config_mod.Config{ .api_key = null, .base_url = "http://x", .model = "m", .effort = "high" };
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
     var http: std.http.Client = .{ .allocator = a, .io = threaded.io() };
     var cancel = true;
 
     const result = try parseStream(a, &fixed, .{
-        .config = &cfg,
+        .base_url = "http://x",
         .http = &http,
         .tools = &.{},
         .api_key = "k",
+        .config = &.{},
         .emit = emit_collect.collect,
         .is_cancelled = struct {
             fn c(ud: ?*anyopaque) bool {
@@ -354,15 +376,15 @@ test "parseStream: incomplete returns max_tokens, failed returns error" {
 
     const stream1 = "data: {\"type\":\"response.incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}\n\n";
     var fixed1 = std.Io.Reader.fixed(stream1);
-    var cfg = config_mod.Config{ .api_key = null, .base_url = "http://x", .model = "m", .effort = "high" };
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
     var http: std.http.Client = .{ .allocator = a, .io = threaded.io() };
     const result = try parseStream(a, &fixed1, .{
-        .config = &cfg,
+        .base_url = "http://x",
         .http = &http,
         .tools = &.{},
         .api_key = "k",
+        .config = &.{},
         .emit = emit_collect.collect,
         .is_cancelled = struct {
             fn c(_: ?*anyopaque) bool {
@@ -376,10 +398,11 @@ test "parseStream: incomplete returns max_tokens, failed returns error" {
     const stream2 = "data: {\"type\":\"response.failed\",\"error\":{\"message\":\"boom\"}}\n\n";
     var fixed2 = std.Io.Reader.fixed(stream2);
     try testing.expectError(error.GenerateFailed, parseStream(a, &fixed2, .{
-        .config = &cfg,
+        .base_url = "http://x",
         .http = &http,
         .tools = &.{},
         .api_key = "k",
+        .config = &.{},
         .emit = emit_collect.collect,
         .is_cancelled = struct {
             fn c(_: ?*anyopaque) bool {
@@ -395,7 +418,6 @@ test "buildBody: contains model, reasoning.effort, stream flags" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var cfg = config_mod.Config{ .api_key = null, .base_url = "http://x", .model = "deepseek-v4-flash", .effort = "high" };
     var input: std.json.Array = std.json.Array.init(a);
     var content: std.json.Array = std.json.Array.init(a);
     var text_item: std.json.ObjectMap = .empty;
@@ -408,7 +430,7 @@ test "buildBody: contains model, reasoning.effort, stream flags" {
     try msg.put(a, "content", .{ .array = content });
     try input.append(.{ .object = msg });
 
-    const body = try buildBody(a, &cfg, .{ .array = input }, &.{}, &.{}, &.{});
+    const body = try buildBody(a, &.{ .{ .key = "model", .value = "deepseek-v4-flash" }, .{ .key = "reasoning.effort", .value = "high" } }, false, .{ .array = input }, &.{}, &.{}, &.{});
     defer a.free(body);
 
     var scanner = std.json.Scanner.initCompleteInput(a, body);
@@ -453,14 +475,13 @@ test "generate: full round-trip against a mock /responses endpoint" {
     const base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{mock.port()});
     defer a.free(base);
 
-    var cfg = config_mod.Config{ .api_key = "sk-test", .base_url = base, .model = "deepseek-v4-flash", .effort = "high" };
-
     const chunks = try a.create(std.ArrayList([]const u8));
     chunks.* = .empty;
 
     const result = try generate(a, .{ .array = std.json.Array.init(a) }, &.{}, &.{}, .{
-        .config = &cfg,
+        .base_url = base,
         .api_key = "sk-test",
+        .config = &.{.{ .key = "model", .value = "deepseek-v4-flash" }},
         .http = &http,
         .tools = &.{},
         .emit = struct {
@@ -501,16 +522,16 @@ test "parseStream: function_call args deltas collect a ToolCall" {
     ;
     var fixed = Io.Reader.fixed(stream);
 
-    var cfg = config_mod.Config{ .api_key = null, .base_url = "http://x", .model = "m", .effort = "high" };
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
     var http: std.http.Client = .{ .allocator = a, .io = threaded.io() };
 
     const result = try parseStream(a, &fixed, .{
-        .config = &cfg,
+        .base_url = "http://x",
         .http = &http,
         .tools = &.{},
         .api_key = "k",
+        .config = &.{},
         .emit = struct {
             fn e(_: []const u8, _: ?*anyopaque) anyerror!void {}
         }.e,
@@ -532,10 +553,9 @@ test "buildBody: tools array includes registry definitions" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var cfg = config_mod.Config{ .api_key = null, .base_url = "http://x", .model = "m", .effort = "high" };
     const tools_registry = @import("../tools/registry.zig");
 
-    const body = try buildBody(a, &cfg, .{ .array = std.json.Array.init(a) }, &.{}, &.{}, &tools_registry.registry);
+    const body = try buildBody(a, &.{.{ .key = "model", .value = "m" }}, false, .{ .array = std.json.Array.init(a) }, &.{}, &.{}, &tools_registry.registry);
     defer a.free(body);
 
     var scanner = std.json.Scanner.initCompleteInput(a, body);

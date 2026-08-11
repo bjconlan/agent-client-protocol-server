@@ -1,62 +1,255 @@
-//! Environment configuration.
+//! Configuration: provider registry.
 //!
-//! MVP is env-only (no config file):
-//! - `OPENAI_API_KEY` — provider API key. Missing → lazy failure at first
-//!   prompt; when present, validated by a startup health check.
-//! - `OPENAI_URL` — base URL, default `https://api.openai.com/v1`. Set to an
-//!   OpenAI-compatible endpoint (e.g. `https://api.deepseek.com/v1`) to use
-//!   another provider.
-//! - `OPENAI_MODEL` — model id, default `deepseek-v4-flash`.
-//! - `OPENAI_EFFORT` — `reasoning.effort` for the Responses API
-//!   (none|minimal|low|medium|high|xhigh|max), default `high`.
+//! Two sources, in priority order:
+//! 1. A JSON config file — `$ACP_CONFIG` or
+//!    `$XDG_CONFIG_HOME/agent-client-protocol/config.json` (default
+//!    `~/.config/agent-client-protocol/config.json`):
+//!    ```json
+//!    { "default_provider": "deepseek",
+//!      "providers": { "deepseek": { "api": "openai",
+//!          "url": "https://api.deepseek.com/v1",
+//!          "api_key_env": "DEEPSEEK_API_KEY",
+//!          "model": "deepseek-v4-flash" } } }
+//!    ```
+//!    `api` selects the adapter dialect (`openai` | `anthropic`);
+//!    `api_key` or `api_key_env` supplies the key (env resolved at load);
+//!    `model` is the FALLBACK model — the session may override it (or any
+//!    other API-request knob) via `session/set_config_option`.
+//! 2. Environment fallback (no file): a single "default" provider from
+//!    `OPENAI_API_KEY` / `OPENAI_URL` / `OPENAI_MODEL`.
 
 const std = @import("std");
 const Io = std.Io;
 
-pub const Config = struct {
-    api_key: ?[]const u8,
-    base_url: []const u8,
-    model: []const u8,
-    effort: []const u8,
+/// Adapter dialect a provider speaks.
+pub const ApiKind = enum {
+    openai,
+    anthropic,
 
-    pub const default_base_url = "https://api.openai.com/v1";
-    pub const default_model = "deepseek-v4-flash";
-    pub const default_effort = "high";
-
-    /// Parse configuration from an environment map. Values are copied into
-    /// `allocator` (typically the process arena).
-    pub fn load(map: *std.process.Environ.Map, allocator: std.mem.Allocator) !Config {
-        const key = map.get("OPENAI_API_KEY");
-        const base = map.get("OPENAI_URL");
-        const model = map.get("OPENAI_MODEL");
-        const effort = map.get("OPENAI_EFFORT");
-
-        return .{
-            .api_key = if (key) |k| try allocator.dupe(u8, k) else null,
-            .base_url = try allocator.dupe(u8, base orelse default_base_url),
-            .model = try allocator.dupe(u8, model orelse default_model),
-            .effort = try allocator.dupe(u8, effort orelse default_effort),
-        };
+    pub fn parse(text: []const u8) ?ApiKind {
+        if (std.mem.eql(u8, text, "openai")) return .openai;
+        if (std.mem.eql(u8, text, "anthropic")) return .anthropic;
+        return null;
     }
 };
 
-const config_mod = @import("config.zig");
-const http_util = @import("util/http.zig");
+/// A configured provider. All strings are arena-owned.
+pub const ProviderConfig = struct {
+    name: []const u8,
+    api: ApiKind,
+    url: []const u8,
+    /// Resolved API key (from `api_key_env` or inline `api_key`); null when
+    /// absent — prompts fail lazily with a clear error.
+    api_key: ?[]const u8,
+    /// Fallback model — used when the session hasn't set one.
+    model: []const u8,
+};
 
-/// Startup provider validation: `GET {base}/models` with the configured key.
-/// Skipped when no key is set (lazy failure at first prompt instead).
+pub const Config = struct {
+    default_provider: []const u8,
+    providers: []ProviderConfig,
+
+    pub const default_model = "deepseek-v4-flash";
+    pub const default_base_url = "https://api.openai.com/v1";
+    pub const config_dir = "agent-client-protocol/config.json";
+
+    /// Load configuration: explicit `ACP_CONFIG` → default XDG path → env
+    /// fallback. `map` is the process environment (used for `api_key_env`
+    /// resolution and the fallback values).
+    pub fn load(io: Io, map: *std.process.Environ.Map, allocator: std.mem.Allocator) !Config {
+        if (map.get("ACP_CONFIG")) |path| {
+            return loadFile(io, allocator, map, path);
+        }
+        if (defaultPath(map, allocator)) |path| {
+            Io.Dir.accessAbsolute(io, path, .{}) catch return loadEnv(map, allocator);
+            return loadFile(io, allocator, map, path);
+        }
+        return loadEnv(map, allocator);
+    }
+
+    /// Resolve a provider by name.
+    pub fn resolve(self: *const Config, name: []const u8) ?*const ProviderConfig {
+        for (self.providers) |*p| {
+            if (std.mem.eql(u8, p.name, name)) return p;
+        }
+        return null;
+    }
+
+    /// The default provider.
+    pub fn default(self: *const Config) ?*const ProviderConfig {
+        return self.resolve(self.default_provider);
+    }
+};
+
+/// Default config file path (`$XDG_CONFIG_HOME` or `$HOME/.config`).
+fn defaultPath(map: *const std.process.Environ.Map, allocator: std.mem.Allocator) ?[]const u8 {
+    if (map.get("XDG_CONFIG_HOME")) |xdg| {
+        return std.fs.path.join(allocator, &.{ xdg, Config.config_dir }) catch null;
+    }
+    const home = map.get("HOME") orelse return null;
+    return std.fs.path.join(allocator, &.{ home, ".config", Config.config_dir }) catch null;
+}
+
+/// Parse the JSON config file at `path` (absolute, resolved from the cwd).
+pub fn loadFile(
+    io: Io,
+    allocator: std.mem.Allocator,
+    map: *std.process.Environ.Map,
+    path: []const u8,
+) !Config {
+    return loadFileAt(io, allocator, map, Io.Dir.cwd(), path);
+}
+
+/// Parse the JSON config file at `sub_path` within `dir`.
+pub fn loadFileAt(
+    io: Io,
+    allocator: std.mem.Allocator,
+    map: *std.process.Environ.Map,
+    dir: Io.Dir,
+    sub_path: []const u8,
+) !Config {
+    const raw = dir.readFileAlloc(io, sub_path, allocator, .unlimited) catch |err| {
+        std.log.warn("config: cannot read '{s}': {s}", .{ sub_path, @errorName(err) });
+        return error.InvalidConfig;
+    };
+
+    var scanner = std.json.Scanner.initCompleteInput(allocator, raw);
+    const value = std.json.Value.jsonParse(allocator, &scanner, .{
+        .allocate = .alloc_always,
+        .max_value_len = raw.len,
+    }) catch {
+        std.log.warn("config: '{s}' is not valid JSON", .{sub_path});
+        return error.InvalidConfig;
+    };
+    const root = switch (value) {
+        .object => |o| o,
+        else => {
+            std.log.warn("config: '{s}' must be a JSON object", .{sub_path});
+            return error.InvalidConfig;
+        },
+    };
+
+    // `default_provider` is optional — when absent, the first listed
+    // provider is the default.
+    var default_name: []const u8 = undefined;
+    if (root.get("default_provider")) |dv| switch (dv) {
+        .string => |s| default_name = s,
+        else => return error.InvalidConfig,
+    } else default_name = "";
+
+    const providers_obj = switch (root.get("providers") orelse return error.InvalidConfig) {
+        .object => |o| o,
+        else => return error.InvalidConfig,
+    };
+
+    var providers: std.ArrayList(ProviderConfig) = .empty;
+    var it = providers_obj.iterator();
+    while (it.next()) |entry| {
+        const pc = try parseProvider(allocator, map, entry.key_ptr.*, entry.value_ptr.*);
+        try providers.append(allocator, pc);
+    }
+    if (providers.items.len == 0) {
+        std.log.warn("config: no providers defined", .{});
+        return error.InvalidConfig;
+    }
+
+    if (default_name.len == 0) default_name = providers.items[0].name;
+    return .{
+        .default_provider = try allocator.dupe(u8, default_name),
+        .providers = try providers.toOwnedSlice(allocator),
+    };
+}
+
+fn parseProvider(
+    allocator: std.mem.Allocator,
+    map: *const std.process.Environ.Map,
+    name: []const u8,
+    value: std.json.Value,
+) !ProviderConfig {
+    const obj = switch (value) {
+        .object => |o| o,
+        else => {
+            std.log.warn("config: provider '{s}' must be an object", .{name});
+            return error.InvalidConfig;
+        },
+    };
+
+    const api_text = switch (obj.get("api") orelse return error.InvalidConfig) {
+        .string => |s| s,
+        else => return error.InvalidConfig,
+    };
+    const api = ApiKind.parse(api_text) orelse {
+        std.log.warn("config: provider '{s}': unknown api '{s}' (openai|anthropic)", .{ name, api_text });
+        return error.InvalidConfig;
+    };
+
+    const url = switch (obj.get("url") orelse return error.InvalidConfig) {
+        .string => |s| s,
+        else => return error.InvalidConfig,
+    };
+
+    var api_key: ?[]const u8 = null;
+    if (obj.get("api_key_env")) |env_name_v| {
+        const env_name = switch (env_name_v) {
+            .string => |s| s,
+            else => return error.InvalidConfig,
+        };
+        if (map.get(env_name)) |v| api_key = try allocator.dupe(u8, v);
+    }
+    if (obj.get("api_key")) |kv| switch (kv) {
+        .string => |s| api_key = try allocator.dupe(u8, s),
+        else => {},
+    };
+
+    var model: []const u8 = Config.default_model;
+    if (obj.get("model")) |mv| switch (mv) {
+        .string => |s| model = s,
+        else => {},
+    };
+
+    return .{
+        .name = try allocator.dupe(u8, name),
+        .api = api,
+        .url = try allocator.dupe(u8, url),
+        .api_key = api_key,
+        .model = try allocator.dupe(u8, model),
+    };
+}
+
+/// Env-only fallback: one "default" provider from the flat env vars.
+fn loadEnv(map: *std.process.Environ.Map, allocator: std.mem.Allocator) !Config {
+    const key = if (map.get("OPENAI_API_KEY")) |k| try allocator.dupe(u8, k) else null;
+    const url = try allocator.dupe(u8, map.get("OPENAI_URL") orelse Config.default_base_url);
+    const model = try allocator.dupe(u8, map.get("OPENAI_MODEL") orelse Config.default_model);
+
+    const provider = ProviderConfig{
+        .name = try allocator.dupe(u8, "default"),
+        .api = .openai,
+        .url = url,
+        .api_key = key,
+        .model = model,
+    };
+    const providers = try allocator.alloc(ProviderConfig, 1);
+    providers[0] = provider;
+    return .{
+        .default_provider = try allocator.dupe(u8, "default"),
+        .providers = providers,
+    };
+}
+
+/// Startup validation of one provider: `GET {base}/models` with its key.
+/// Skipped when no key is configured (lazy failure at first prompt).
 pub fn healthCheck(
-    config: Config,
+    provider: ProviderConfig,
     http: *std.http.Client,
     allocator: std.mem.Allocator,
 ) !void {
-    const key = config.api_key orelse return;
-    const url = try http_util.url(allocator, config.base_url, "/models");
+    const key = provider.api_key orelse return;
+    const url = try @import("util/http.zig").url(allocator, provider.url, "/models");
     defer allocator.free(url);
 
-    var response = try http_util.request(http, allocator, url, key, null);
+    var response = try @import("util/http.zig").request(http, allocator, url, key, null);
     defer response.deinit();
-    // `http_util.request` already classified the status; reaching here means 2xx.
 }
 
 // ---------------------------------------------------------------------------
@@ -65,75 +258,119 @@ pub fn healthCheck(
 
 const testing = std.testing;
 
-fn testMap(a: std.mem.Allocator) !std.process.Environ.Map {
-    const map = try std.process.Environ.createMap(std.process.Environ.empty, a);
-    return map;
+fn testEnv(a: std.mem.Allocator) !std.process.Environ.Map {
+    return std.process.Environ.createMap(std.process.Environ.empty, a);
 }
 
-test "config: defaults apply when env is empty" {
+test "env fallback: single default provider" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    var map = try testMap(a);
-    defer map.deinit();
-
-    const c = try Config.load(&map, a);
-    try testing.expect(c.api_key == null);
-    try testing.expectEqualStrings(Config.default_base_url, c.base_url);
-    try testing.expectEqualStrings(Config.default_model, c.model);
-    try testing.expectEqualStrings(Config.default_effort, c.effort);
-}
-
-test "config: env overrides are read" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    var map = try testMap(a);
+    var map = try testEnv(a);
     defer map.deinit();
     try map.put("OPENAI_API_KEY", "sk-test");
     try map.put("OPENAI_URL", "https://api.deepseek.com/v1");
     try map.put("OPENAI_MODEL", "deepseek-chat");
-    try map.put("OPENAI_EFFORT", "medium");
 
-    const c = try Config.load(&map, a);
-    try testing.expectEqualStrings("sk-test", c.api_key.?);
-    try testing.expectEqualStrings("https://api.deepseek.com/v1", c.base_url);
-    try testing.expectEqualStrings("deepseek-chat", c.model);
-    try testing.expectEqualStrings("medium", c.effort);
+    const cfg = try Config.load(testing.io, &map, a);
+    const p = cfg.default().?;
+    try testing.expectEqualStrings("default", p.name);
+    try testing.expectEqual(ApiKind.openai, p.api);
+    try testing.expectEqualStrings("https://api.deepseek.com/v1", p.url);
+    try testing.expectEqualStrings("sk-test", p.api_key.?);
+    try testing.expectEqualStrings("deepseek-chat", p.model);
 }
 
-test "healthCheck: 2xx passes, 401 fails, missing key skipped" {
+test "env fallback: defaults apply (deepseek-v4-flash, openai url)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    var threaded = Io.Threaded.init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-    var http: std.http.Client = .{ .allocator = a, .io = io };
-    defer http.deinit();
+    var map = try testEnv(a);
+    defer map.deinit();
 
-    const Mock = @import("util/mock_http.zig").Mock;
+    const cfg = try Config.load(testing.io, &map, a);
+    const p = cfg.default().?;
+    try testing.expect(p.api_key == null);
+    try testing.expectEqualStrings(Config.default_model, p.model);
+    try testing.expectEqualStrings(Config.default_base_url, p.url);
+}
 
-    // 200 → pass
-    var ok_mock = try Mock.start(io, a, "HTTP/1.1 200 OK", "{}");
-    defer ok_mock.deinit();
-    const ok_base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{ok_mock.port()});
-    defer a.free(ok_base);
-    const ok_cfg = Config{ .api_key = "sk-test", .base_url = ok_base, .model = "m", .effort = "high" };
-    try healthCheck(ok_cfg, &http, a);
+test "loadFileAt: parses and validates a provider config" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
 
-    // 401 → BadApiKey
-    var bad_mock = try Mock.start(io, a, "HTTP/1.1 401 Unauthorized", "{}");
-    defer bad_mock.deinit();
-    const bad_base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{bad_mock.port()});
-    defer a.free(bad_base);
-    const bad_cfg = Config{ .api_key = "sk-bad", .base_url = bad_base, .model = "m", .effort = "high" };
-    try testing.expectError(error.BadApiKey, healthCheck(bad_cfg, &http, a));
+    var map = try testEnv(a);
+    defer map.deinit();
+    try map.put("DEEPSEEK_API_KEY", "sk-ds");
 
-    // missing key → skipped (no request made)
-    const no_key = Config{ .api_key = null, .base_url = bad_base, .model = "m", .effort = "high" };
-    try healthCheck(no_key, &http, a);
+    const json =
+        \\{"default_provider":"deepseek","providers":{
+        \\ "deepseek":{"api":"openai","url":"https://api.deepseek.com/v1","api_key_env":"DEEPSEEK_API_KEY","model":"deepseek-v4-flash"},
+        \\ "anthropic":{"api":"anthropic","url":"https://api.anthropic.com/v1","api_key":"sk-inline"}
+        \\}}
+    ;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(testing.io, .{ .sub_path = "config.json", .data = json });
+
+    const cfg = try loadFileAt(testing.io, a, &map, dir.dir, "config.json");
+    try testing.expectEqualStrings("deepseek", cfg.default_provider);
+    try testing.expectEqual(@as(usize, 2), cfg.providers.len);
+    const ds = cfg.resolve("deepseek").?;
+    try testing.expectEqual(ApiKind.openai, ds.api);
+    try testing.expectEqualStrings("sk-ds", ds.api_key.?);
+    try testing.expectEqualStrings("deepseek-v4-flash", ds.model);
+    const an = cfg.resolve("anthropic").?;
+    try testing.expectEqual(ApiKind.anthropic, an.api);
+    try testing.expectEqualStrings("sk-inline", an.api_key.?);
+    try testing.expectEqualStrings(Config.default_model, an.model); // model defaults
+}
+
+test "loadFileAt: default provider falls back to the first listed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var map = try testEnv(a);
+    defer map.deinit();
+
+    const json =
+        \\{"providers":{
+        \\ "second":{"api":"openai","url":"http://second"},
+        \\ "first":{"api":"openai","url":"http://first"}
+        \\}}
+    ;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(testing.io, .{ .sub_path = "c.json", .data = json });
+
+    const cfg = try loadFileAt(testing.io, a, &map, dir.dir, "c.json");
+    try testing.expectEqualStrings("second", cfg.default_provider);
+}
+
+test "loadFileAt: invalid configs rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var map = try testEnv(a);
+    defer map.deinit();
+
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    // unknown api
+    try dir.dir.writeFile(testing.io, .{ .sub_path = "c1.json", .data = "{\"default_provider\":\"x\",\"providers\":{\"x\":{\"api\":\"bogus\",\"url\":\"http://x\"}}}" });
+    try testing.expectError(error.InvalidConfig, loadFileAt(testing.io, a, &map, dir.dir, "c1.json"));
+
+    // empty providers
+    try dir.dir.writeFile(testing.io, .{ .sub_path = "c2.json", .data = "{\"default_provider\":\"x\",\"providers\":{}}" });
+    try testing.expectError(error.InvalidConfig, loadFileAt(testing.io, a, &map, dir.dir, "c2.json"));
+
+    // missing url
+    try dir.dir.writeFile(testing.io, .{ .sub_path = "c3.json", .data = "{\"default_provider\":\"x\",\"providers\":{\"x\":{\"api\":\"openai\"}}}" });
+    try testing.expectError(error.InvalidConfig, loadFileAt(testing.io, a, &map, dir.dir, "c3.json"));
 }

@@ -17,15 +17,17 @@ pub fn main(init: std.process.Init) !void {
 
     var env_map = try std.process.Environ.createMap(init.minimal.environ, arena);
     defer env_map.deinit();
-    const config = try config_mod.Config.load(&env_map, arena);
+    const config = try config_mod.Config.load(io, &env_map, arena);
 
     var http_client: std.http.Client = .{ .allocator = arena, .io = io };
     defer http_client.deinit();
 
-    config_mod.healthCheck(config, &http_client, arena) catch |err| {
-        std.log.err("provider health check failed: {s} (check OPENAI_API_KEY / OPENAI_URL)", .{@errorName(err)});
-        std.process.exit(1);
-    };
+    if (config.default()) |provider| {
+        config_mod.healthCheck(provider.*, &http_client, arena) catch |err| {
+            std.log.err("provider health check failed: {s} (check the provider config)", .{@errorName(err)});
+            std.process.exit(1);
+        };
+    }
 
     var stdout_buffer: [64 * 1024]u8 = undefined;
     var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);

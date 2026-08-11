@@ -9,7 +9,6 @@
 
 const std = @import("std");
 
-const config_mod = @import("../config.zig");
 const http_util = @import("../util/http.zig");
 const tools = @import("../tools/registry.zig");
 
@@ -54,12 +53,23 @@ pub const Result = struct {
     output_items: []std.json.Value,
 };
 
+/// A session-config key/value forwarded to the provider request (e.g.
+/// `model`, `reasoning.effort`, `temperature`, `max_output_tokens`).
+pub const ConfigKV = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
 /// Per-generation options.
 pub const Options = struct {
-    config: *const config_mod.Config,
+    /// Provider base URL (the request URL is built from this).
+    base_url: []const u8,
     /// API key for the provider; may be empty — providers decide how to
     /// fail lazily.
     api_key: []const u8,
+    /// Session config KVs forwarded to the request; includes the resolved
+    /// `model` (session value or provider fallback).
+    config: []const ConfigKV,
     http: *std.http.Client,
     /// Tool definitions to advertise (provider `tools` param).
     tools: []const tools.Tool,

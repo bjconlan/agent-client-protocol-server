@@ -105,6 +105,7 @@ pub const Notification = struct {
 const v1_methods = [_]Method{
     .{ .name = "initialize", .handler = initialize },
     .{ .name = "session/new", .handler = sessionNew },
+    .{ .name = "session/set_config_option", .handler = sessionSetConfigOption },
     .{ .name = "session/prompt", .handler = sessionPrompt },
 };
 
@@ -192,11 +193,102 @@ fn sessionNew(
         else => return error.InvalidParams,
     };
 
-    const session = try ctx.sessions.create(cwd);
+    const provider = ctx.config.default() orelse {
+        std.log.err("session/new: no default provider configured", .{});
+        return error.InternalError;
+    };
+    const session = try ctx.sessions.create(cwd, provider.name);
 
     var result: std.json.ObjectMap = .empty;
     errdefer result.deinit(allocator);
     try result.put(allocator, "sessionId", .{ .string = session.id });
+    try result.put(allocator, "configOptions", try configOptionsValue(allocator, session, provider));
+    return .{ .object = result };
+}
+
+/// Build the advertised session config options: a `model` select with the
+/// provider fallback as the option set, current value = session set or
+/// fallback.
+fn configOptionsValue(
+    allocator: std.mem.Allocator,
+    session: *types.Session,
+    provider: *const config_mod.ProviderConfig,
+) !std.json.Value {
+    var category: std.json.ObjectMap = .empty;
+    try category.put(allocator, "kind", .{ .string = "model_selector" });
+
+    var options_arr: std.json.Array = std.json.Array.init(allocator);
+    try options_arr.append(.{ .string = provider.model });
+
+    const current = session.config.get("model") orelse provider.model;
+    var value: std.json.ObjectMap = .empty;
+    try value.put(allocator, "type", .{ .string = "select" });
+    try value.put(allocator, "currentValue", .{ .string = current });
+    try value.put(allocator, "options", .{ .array = options_arr });
+
+    var option: std.json.ObjectMap = .empty;
+    try option.put(allocator, "id", .{ .string = "model" });
+    try option.put(allocator, "name", .{ .string = "Model" });
+    try option.put(allocator, "category", .{ .object = category });
+    try option.put(allocator, "value", .{ .object = value });
+
+    var options: std.json.Array = std.json.Array.init(allocator);
+    try options.append(.{ .object = option });
+    return .{ .array = options };
+}
+
+/// `session/set_config_option` — set a session configuration value. Any
+/// configId is accepted (forwarded to the provider request; the provider
+/// applies what it understands). Response carries the full config state.
+fn sessionSetConfigOption(
+    ctx: *Context,
+    allocator: std.mem.Allocator,
+    id: json_rpc.RequestId,
+    params: std.json.Value,
+) anyerror!std.json.Value {
+    _ = id;
+    const p = switch (params) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    const session_id = switch (p.get("sessionId") orelse return error.InvalidParams) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    };
+    const config_id = switch (p.get("configId") orelse return error.InvalidParams) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    };
+    const session = ctx.sessions.getPtr(session_id) orelse return error.InvalidParams;
+
+    // value: {value: string} (default) or {type: "boolean", value: bool}
+    var value_text: []const u8 = undefined;
+    const value_v = p.get("value") orelse return error.InvalidParams;
+    const value_obj = switch (value_v) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    if (value_obj.get("type")) |t| {
+        if (t != .string or !std.mem.eql(u8, t.string, "boolean")) return error.InvalidParams;
+        value_text = switch (value_obj.get("value") orelse return error.InvalidParams) {
+            .bool => |b| if (b) "true" else "false",
+            else => return error.InvalidParams,
+        };
+    } else {
+        value_text = switch (value_obj.get("value") orelse return error.InvalidParams) {
+            .string => |s| s,
+            else => return error.InvalidParams,
+        };
+    }
+
+    const key = try ctx.process_allocator.dupe(u8, config_id);
+    const val = try ctx.process_allocator.dupe(u8, value_text);
+    try session.config.put(key, val);
+
+    var result: std.json.ObjectMap = .empty;
+    errdefer result.deinit(allocator);
+    const provider = ctx.config.resolve(session.provider_name) orelse return error.InternalError;
+    try result.put(allocator, "configOptions", try configOptionsValue(allocator, session, provider));
     return .{ .object = result };
 }
 
@@ -378,10 +470,39 @@ const PromptWorker = struct {
             .assistant = &self.assistant,
         };
 
-        const api_key = self.ctx.config.api_key orelse {
-            self.writeError(json_rpc.ErrorCode.internal_error, "Missing OPENAI_API_KEY");
+        // Resolve the session's provider (server config) + its model and any
+        // session-set config KVs (forwarded to the provider request).
+        const session = self.ctx.sessions.getPtr(self.session_id) orelse {
+            self.writeError(json_rpc.ErrorCode.internal_error, "Unknown session");
             return;
         };
+        const provider = self.ctx.config.resolve(session.provider_name) orelse {
+            self.writeError(json_rpc.ErrorCode.internal_error, "Provider not configured");
+            return;
+        };
+        if (provider.api == .anthropic) {
+            self.writeError(json_rpc.ErrorCode.internal_error, "Adapter not implemented: anthropic");
+            return;
+        }
+        const api_key = provider.api_key orelse {
+            self.writeError(json_rpc.ErrorCode.internal_error, "Missing API key");
+            return;
+        };
+
+        var config_kvs: std.ArrayList(adapter.ConfigKV) = .empty;
+        const model = session.config.get("model") orelse provider.model;
+        config_kvs.append(allocator, .{ .key = "model", .value = model }) catch {
+            self.writeError(json_rpc.ErrorCode.internal_error, "Internal error");
+            return;
+        };
+        var cfg_it = session.config.iterator();
+        while (cfg_it.next()) |e| {
+            if (std.mem.eql(u8, e.key_ptr.*, "model")) continue;
+            config_kvs.append(allocator, .{ .key = e.key_ptr.*, .value = e.value_ptr.* }) catch {
+                self.writeError(json_rpc.ErrorCode.internal_error, "Internal error");
+                return;
+            };
+        }
 
         var tool_results: std.ArrayList(adapter.ToolResult) = .empty;
         var prior_outputs: std.ArrayList(std.json.Value) = .empty;
@@ -395,8 +516,9 @@ const PromptWorker = struct {
             };
 
             const result = self.ctx.provider.generate(allocator, input, prior_outputs.items, tool_results.items, .{
-                .config = &self.ctx.config,
+                .base_url = provider.url,
                 .api_key = api_key,
+                .config = config_kvs.items,
                 .http = self.ctx.http,
                 .tools = &tools_registry.registry,
                 .emit = emitChunk,
@@ -773,6 +895,14 @@ fn testContext(a: std.mem.Allocator, writer: *Io.Writer) !*Context {
     const ctx = try a.create(Context);
     const threaded = try a.create(std.Io.Threaded);
     threaded.* = std.Io.Threaded.init(a, .{});
+    const providers = a.alloc(config_mod.ProviderConfig, 1) catch unreachable;
+    providers[0] = .{
+        .name = "default",
+        .api = .openai,
+        .url = "http://127.0.0.1",
+        .api_key = "test-key",
+        .model = "test-model",
+    };
     ctx.* = .{
         .io = threaded.io(),
         .sessions = store,
@@ -782,12 +912,7 @@ fn testContext(a: std.mem.Allocator, writer: *Io.Writer) !*Context {
         .cancel_requested = cancel,
         .worker_done = worker_done,
         .http = http,
-        .config = .{
-            .api_key = "test-key",
-            .base_url = "http://127.0.0.1",
-            .model = "test-model",
-            .effort = "high",
-        },
+        .config = .{ .default_provider = "default", .providers = providers },
         .process_allocator = a,
         .permission = permission,
     };

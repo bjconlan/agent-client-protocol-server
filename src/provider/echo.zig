@@ -69,12 +69,6 @@ test "echo: emits blocks, end_turn; honours cancellation" {
     const chunks = try a.create(std.ArrayList([]const u8));
     chunks.* = .empty;
     var cancel = false;
-    const cfg = @import("../config.zig").Config{
-        .api_key = null,
-        .base_url = "http://x",
-        .model = "m",
-        .effort = "high",
-    };
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
     var http: std.http.Client = .{ .allocator = a, .io = threaded.io() };
@@ -96,8 +90,9 @@ test "echo: emits blocks, end_turn; honours cancellation" {
     try input.append(.{ .object = msg });
 
     const result = try generateImpl(a, .{ .array = input }, &.{}, &.{}, .{
-        .config = &cfg,
+        .base_url = "http://x",
         .api_key = "",
+        .config = &.{},
         .http = &http,
         .tools = &.{},
         .emit = struct {
@@ -119,8 +114,9 @@ test "echo: emits blocks, end_turn; honours cancellation" {
 
     cancel = true;
     const cancelled = try generateImpl(a, .{ .array = input }, &.{}, &.{}, .{
-        .config = &cfg,
+        .base_url = "http://x",
         .api_key = "",
+        .config = &.{},
         .http = &http,
         .tools = &.{},
         .emit = struct {
