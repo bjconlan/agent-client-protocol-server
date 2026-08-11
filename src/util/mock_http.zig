@@ -129,7 +129,7 @@ test "mock: serves a canned response and records the request" {
 
     var resp = try @import("../util/http.zig").request(&http, a, url, "sk-test", .{});
     defer resp.deinit();
-    const body = try @import("../util/http.zig").readAll(a, resp.reader);
+    const body = try @import("../util/http.zig").readAll(resp, a);
     try testing.expectEqualStrings("hello", body);
     try testing.expect(std.mem.startsWith(u8, mock.request.items, "GET /models"));
 }

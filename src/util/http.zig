@@ -32,6 +32,10 @@ pub const Response = struct {
     response: std.http.Client.Response,
     transfer_buffer: [64 * 1024]u8,
     reader: *std.Io.Reader,
+    /// Exchange info for the one-line trace ("GET"/"POST", url, status).
+    method: []const u8,
+    url: []const u8,
+    status: std.http.Status,
 
     pub fn deinit(self: *Response) void {
         self.req.deinit();
@@ -66,12 +70,7 @@ pub fn request(
 ) Error!*Response {
     const uri = std.Uri.parse(url_text) catch return error.Network;
     const body = options.body;
-    std.log.scoped(.http).debug("{s} {s} (auth: {s})", .{
-        if (body == null) "GET" else "POST",
-        url_text,
-        @tagName(options.auth),
-    });
-    if (body) |b| std.log.scoped(.http).debug("  body: {s}", .{b});
+    const method = if (body == null) "GET" else "POST";
 
     // Auth header: `Authorization: Bearer <key>` or `x-api-key: <key>`, plus
     // any extra headers, assembled into a single extra_headers slice (the
@@ -102,6 +101,12 @@ pub fn request(
     const self = allocator.create(Response) catch return error.Network;
     errdefer allocator.destroy(self);
 
+    std.log.scoped(.http).debug("{s} {s}{s}", .{
+        url_text,
+        method,
+        if (body) |b| std.fmt.allocPrint(allocator, " body={s}", .{b}) catch "" else "",
+    });
+
     // Build the request directly into self.req so the response body reader
     // (which points into self.req + self.transfer_buffer) is stable at its
     // final heap location — a local req would dangle after this returns.
@@ -131,7 +136,9 @@ pub fn request(
     var redirect_buffer: [64]u8 = undefined;
     self.response = self.req.receiveHead(&redirect_buffer) catch return error.Network;
     const status = self.response.head.status;
-    std.log.scoped(.http).debug("  status: {d}", .{@intFromEnum(status)});
+    self.method = method;
+    self.url = url_text;
+    self.status = status;
 
     if (status.class() != .success) {
         switch (status) {
@@ -148,13 +155,15 @@ pub fn request(
     return self;
 }
 
-/// Read the remainder of a streaming response body into `allocator`.
-pub fn readAll(
-    allocator: std.mem.Allocator,
-    reader: *std.Io.Reader,
-) ![]u8 {
-    const body = try reader.allocRemaining(allocator, .unlimited);
-    std.log.scoped(.http).debug("  response body: {s}", .{body});
+/// Read the remainder of a response body, logging the full exchange on one
+/// line: `{method} {url} {status} body={body}`.
+pub fn readAll(response: *Response, allocator: std.mem.Allocator) ![]u8 {
+    const body = try response.reader.allocRemaining(allocator, .unlimited);
+    std.log.scoped(.http).debug("{s} {d} body={s}", .{
+        response.url,
+        @intFromEnum(response.status),
+        body,
+    });
     return body;
 }
 
@@ -212,7 +221,7 @@ test "bearer auth sends a single Authorization header" {
 
     var resp = try request(&http, a, url_text, "sk-test", .{});
     defer resp.deinit();
-    const body = try readAll(a, resp.reader);
+    const body = try readAll(resp, a);
     try testing.expectEqualStrings("ok", body);
 
     try testing.expect(std.mem.indexOf(u8, mock.request.items, "authorization: Bearer sk-test") != null);

@@ -254,7 +254,7 @@ pub fn healthCheck(
     var response = try @import("util/http.zig").request(http, allocator, url, key, .{});
     defer response.deinit();
     // Consume (and, at ACP_LOG=debug, trace) the body.
-    _ = try @import("util/http.zig").readAll(allocator, response.reader);
+    _ = try @import("util/http.zig").readAll(response, allocator);
 }
 
 // ---------------------------------------------------------------------------
