@@ -172,3 +172,9 @@ Format:
 **Context:** User wanted the GitHub release build to mirror fossil's distribution scheme, replacing "fossil" with "acps", with release builds only on pushed tags and tags reflecting the date-time.
 **Options considered:** keep `v*` tags + generic triple names; auto-build on every push.
 **Outcome:** **fossil-style, tag-gated.** The release workflow triggers only when a tag matching the fossil snapshot date-time format (12- or 14-digit UTC stamp, e.g. `20260801193352`) is pushed; the tag is the version in artifact names `acps-<platform>-<stamp>` for `linux-x64`, `mac-arm`, `mac-x64`, `pi`, `src`, `w32`, `w64`, `win-arm` (`.tar.gz` for unix/pi/src, `.zip` for windows). All binary targets cross-compiled on the ubuntu runner via `zig build -Dtarget=`; `src` is a `git archive` tarball. All 7 target triples verified locally.
+
+### 2025-08-11 — .gitattributes: force LF on checkout (Windows CI fmt failure)
+
+**Context:** CI `zig fmt --check .` failed on the windows runner, listing every Zig file. Root cause: default `core.autocrlf=true` on Windows checkouts produces CRLF line endings; `zig fmt` (0.16) treats CRLF as unformatted (verified locally: CRLF copy fails fmt, LF copy passes).
+**Options considered:** `git config core.autocrlf false` per job; re-normalize in workflow; commit `.gitattributes`.
+**Outcome:** **`.gitattributes` with `* text=auto eol=lf`** — forces LF on checkout for all text files (repo contains no tracked binaries), fixing fmt on Windows runners without per-job config.
