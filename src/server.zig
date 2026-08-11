@@ -144,7 +144,7 @@ fn dispatch(
         .response => |resp| {
             // Route the client's response to the pending permission request
             // (the prompt worker waits on the slot).
-            if (!ctx.permission.done and ctx.permission.request_id.len > 0 and
+            if (!ctx.permission.done and ctx.permission.request_id != 0 and
                 idMatches(resp.id, ctx.permission.request_id))
             {
                 methods_v1.lockSpin(&ctx.permission.mutex);
@@ -154,7 +154,7 @@ fn dispatch(
             }
         },
         .error_response => |resp| {
-            if (!ctx.permission.done and ctx.permission.request_id.len > 0 and
+            if (!ctx.permission.done and ctx.permission.request_id != 0 and
                 idMatches(resp.id, ctx.permission.request_id))
             {
                 methods_v1.lockSpin(&ctx.permission.mutex);
@@ -168,9 +168,9 @@ fn dispatch(
 
 /// Does a JSON-RPC id equal a plain string id? (The worker uses string ids
 /// like "p1"; the client echoes them verbatim.)
-fn idMatches(id: json_rpc.RequestId, expected: []const u8) bool {
+fn idMatches(id: json_rpc.RequestId, expected: i64) bool {
     return switch (id) {
-        .string => |s| std.mem.eql(u8, s, expected),
+        .int => |i| i == expected,
         else => false,
     };
 }
@@ -369,7 +369,7 @@ test "tool-call round-trip: echo tool, permission granted, result fed back" {
         \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
         \\{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
         \\{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"1","prompt":[{"type":"text","text":"hello"}]}}
-        \\{"jsonrpc":"2.0","id":"p1","result":{"granted":true}}
+        \\{"jsonrpc":"2.0","id":1001,"result":{"granted":true}}
     ;
     var fixed_reader = Io.Reader.fixed(input);
     var out: Io.Writer.Allocating = .init(a);
@@ -390,7 +390,7 @@ test "tool-call round-trip: echo tool, permission granted, result fed back" {
     try testing.expect(std.mem.indexOf(u8, actual, "\"rawInput\":\"{\\\"x\\\":1}\"") != null);
     // request_permission sent with id p1
     try testing.expect(std.mem.indexOf(u8, actual, "\"method\":\"session/request_permission\"") != null);
-    try testing.expect(std.mem.indexOf(u8, actual, "\"id\":\"p1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"id\":1001") != null);
     // echo result fed back, completed update (deterministic)
     try testing.expect(std.mem.indexOf(u8, actual, "\"status\":\"completed\"") != null);
     try testing.expect(std.mem.indexOf(u8, actual, "\"rawOutput\":\"{\\\"x\\\":1}\"") != null);

@@ -27,10 +27,16 @@ provider-adapter interface intended to support additional providers later.
 
 ## Status
 
-Skeleton project — setup complete. **MVP scope**: a usable-for-basic-use ACP v1
-server with OpenAI Responses API support (streaming turns + tool calling), no
-config file, minimal env vars. See `AGENTS.md` for workflow conventions and
-`.ai/knowledge/` for architecture and decisions.
+**MVP complete.** The server handles the full ACP v1 session flow over stdio:
+`initialize` (version negotiation), `session/new`, `session/prompt` with
+streamed `session/update` notifications, `session/cancel` (preemptive), and
+agent-side tool execution (`session/request_permission` + `tool_call`
+updates) with client-persisted permissions. Backed by the OpenAI Responses
+API (or any OpenAI-compatible endpoint — verified live against DeepSeek with
+`get_current_time`). No config file; env-only.
+
+Remaining roadmap (Epic 2): Anthropic adapter, multi-provider config,
+multiple LLMs per session (ACP v2 partners), ACP v2 support, persistence.
 
 ## Prerequisites
 

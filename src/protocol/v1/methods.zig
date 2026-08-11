@@ -38,9 +38,11 @@ pub const DeferredResponse = error{DeferredResponse};
 /// owns session/workspace policy) — the server stays stateless on grants.
 pub const PendingPermission = struct {
     mutex: std.atomic.Mutex = .unlocked,
-    /// Request id of the in-flight `session/request_permission` (worker
-    /// arena-owned, alive while the worker waits).
-    request_id: []const u8 = "",
+    /// Request id of the in-flight `session/request_permission`. Integer ids
+    /// (1000+) are used because the fossil client serializes STRING ids as
+    /// bare tokens (invalid JSON — `"id":p2`), which our strict parser
+    /// rejects. Integers round-trip correctly.
+    request_id: i64 = 0,
     done: bool = false,
     granted: bool = false,
     /// Next request id counter.
@@ -261,12 +263,7 @@ fn sessionPrompt(
     };
     // Arm the permission slot synchronously (main thread) BEFORE spawning, so
     // the loop can route the client's response no matter how fast it arrives.
-    // The id is duped into the worker arena (outlives per-message resets).
-    const permission_id = std.fmt.allocPrint(wa, "p{d}", .{ctx.permission.next_id}) catch {
-        worker_arena.deinit();
-        ctx.process_allocator.destroy(worker_arena);
-        return error.InternalError;
-    };
+    const permission_id: i64 = 1000 + @as(i64, @intCast(ctx.permission.next_id));
     ctx.permission.next_id += 1;
     lockSpin(&ctx.permission.mutex);
     ctx.permission.request_id = permission_id;
@@ -337,6 +334,10 @@ const EmitUd = struct {
     ctx: *Context,
     allocator: std.mem.Allocator,
     session_id: []const u8,
+    /// The assistant's streamed text this turn — appended to session history
+    /// so consecutive turns are a proper user/assistant conversation (the
+    /// model otherwise sees back-to-back user messages).
+    assistant: *std.ArrayList(u8),
     /// True once the first chunk has been emitted. Cancels that land before
     /// streaming starts (e.g. the loop's EOF shutdown racing thread spawn)
     /// are ignored — pre-start cancels are handled synchronously in
@@ -354,9 +355,12 @@ const PromptWorker = struct {
     text_blocks: []const []const u8,
     session_id: []const u8,
     id: json_rpc.RequestId,
-    /// Reserved permission request id — the pending slot is armed before any
-    /// provider call so the main loop can route an early response.
-    permission_id: []const u8,
+    /// Reserved permission request id (integer, see PendingPermission) — the
+    /// pending slot is armed before any provider call so the main loop can
+    /// route an early response.
+    permission_id: i64 = 0,
+    /// Accumulated assistant text for this turn (mirrors emit_ud.assistant).
+    assistant: std.ArrayList(u8) = .empty,
 
     fn run(self: *PromptWorker) void {
         defer self.ctx.worker_done.store(true, .monotonic);
@@ -366,10 +370,12 @@ const PromptWorker = struct {
         }
         const allocator = self.arena.allocator();
 
+        self.assistant = .empty;
         var emit_ud = EmitUd{
             .ctx = self.ctx,
             .allocator = allocator,
             .session_id = self.session_id,
+            .assistant = &self.assistant,
         };
 
         const api_key = self.ctx.config.api_key orelse {
@@ -522,7 +528,7 @@ const PromptWorker = struct {
         try params.put(allocator, "toolCall", .{ .object = tool_call });
         try params.put(allocator, "options", .{ .array = std.json.Array.init(allocator) });
 
-        self.writeLocked(json_rpc.serializeRequest(allocator, self.ctx.writer, .{ .string = req_id }, "session/request_permission", .{ .object = params }));
+        self.writeLocked(json_rpc.serializeRequest(allocator, self.ctx.writer, .{ .int = req_id }, "session/request_permission", .{ .object = params }));
 
         var waited: u32 = 0;
         while (true) {
@@ -592,13 +598,17 @@ const PromptWorker = struct {
     /// Append this turn to the session history (user prompt + assistant
     /// text; tool exchanges live within the turn). Keeps the last ~20.
     fn appendHistory(self: *PromptWorker, allocator: std.mem.Allocator) !void {
+        _ = allocator;
         const session = self.ctx.sessions.getPtr(self.session_id) orelse return;
         for (self.text_blocks) |text| {
             try session.history.append(self.ctx.process_allocator, .{ .role = .user, .text = try self.ctx.process_allocator.dupe(u8, text) });
         }
-        // Assistant text is not tracked separately yet (the provider streams
-        // it); the history holds user prompts for MVP context.
-        _ = allocator;
+        if (self.assistant.items.len > 0) {
+            try session.history.append(self.ctx.process_allocator, .{
+                .role = .assistant,
+                .text = try self.ctx.process_allocator.dupe(u8, self.assistant.items),
+            });
+        }
         if (session.history.items.len > 40) {
             session.history.replaceRange(self.ctx.process_allocator, 0, session.history.items.len - 20, &.{}) catch {};
         }
@@ -668,6 +678,7 @@ fn appendMessage(
 fn emitChunk(chunk: []const u8, userdata: ?*anyopaque) anyerror!void {
     const ud: *EmitUd = @ptrCast(@alignCast(userdata.?));
     ud.streaming = true;
+    try ud.assistant.appendSlice(ud.allocator, chunk);
     lockSpin(ud.ctx.writer_lock);
     defer ud.ctx.writer_lock.unlock();
     try emitMessageChunk(ud.ctx, ud.allocator, ud.session_id, chunk);
@@ -965,7 +976,7 @@ test "session history: buildInput includes history + current prompt" {
         .text_blocks = try dupStrings(wa, &.{"second question"}),
         .session_id = try wa.dupe(u8, "1"),
         .id = .{ .int = 2 },
-        .permission_id = "",
+        .permission_id = 0,
     };
 
     const input = try worker.buildInput(wa);

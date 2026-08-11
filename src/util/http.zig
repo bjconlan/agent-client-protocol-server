@@ -23,8 +23,9 @@ pub const Error = error{
 };
 
 /// An in-flight streaming response. `reader` yields the body; call `deinit`
-/// when done. The struct must not be moved after construction (the reader
-/// points into its transfer buffer).
+/// when done. Heap-allocated (via `request`) so the reader's borrowed
+/// transfer buffer and the request pointers are stable — returning this by
+/// value would dangle them.
 pub const Response = struct {
     req: std.http.Client.Request,
     response: std.http.Client.Response,
@@ -37,21 +38,27 @@ pub const Response = struct {
 };
 
 /// Send a JSON request. `body` null → GET, else POST with the given body.
-/// Returns the streaming response; the caller checks `status` and reads the
-/// body.
+/// Returns a heap-allocated streaming response (allocate from an arena or
+/// free the struct yourself); the caller checks `status` and reads the body.
 pub fn request(
     client: *std.http.Client,
     allocator: std.mem.Allocator,
     url_text: []const u8,
     api_key: []const u8,
     body: ?[]const u8,
-) Error!Response {
+) Error!*Response {
     const uri = std.Uri.parse(url_text) catch return error.Network;
 
     const auth_header = std.fmt.allocPrint(allocator, "Bearer {s}", .{api_key}) catch return error.Network;
     defer allocator.free(auth_header);
 
-    var req = client.request(
+    const self = allocator.create(Response) catch return error.Network;
+    errdefer allocator.destroy(self);
+
+    // Build the request directly into self.req so the response body reader
+    // (which points into self.req + self.transfer_buffer) is stable at its
+    // final heap location — a local req would dangle after this returns.
+    self.req = client.request(
         if (body == null) .GET else .POST,
         uri,
         .{
@@ -61,22 +68,20 @@ pub fn request(
             },
         },
     ) catch return error.Network;
-    errdefer req.deinit();
+    errdefer self.req.deinit();
 
     if (body) |b| {
         // `sendBodyComplete` requires a mutable buffer; the body is not
         // modified, so a copy suffices.
         const owned = allocator.dupe(u8, b) catch return error.Network;
         defer allocator.free(owned);
-        req.sendBodyComplete(owned) catch return error.Network;
+        self.req.sendBodyComplete(owned) catch return error.Network;
     } else {
-        req.sendBodiless() catch return error.Network;
+        self.req.sendBodiless() catch return error.Network;
     }
 
-    var self: Response = undefined;
-    self.req = req;
     var redirect_buffer: [64]u8 = undefined;
-    self.response = req.receiveHead(&redirect_buffer) catch return error.Network;
+    self.response = self.req.receiveHead(&redirect_buffer) catch return error.Network;
     const status = self.response.head.status;
 
     if (status.class() != .success) {
