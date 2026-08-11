@@ -56,7 +56,8 @@ pub const Context = struct {
     sessions: *types.SessionStore,
     writer: *Io.Writer,
     writer_lock: *std.atomic.Mutex,
-    provider: adapter.Provider,
+    /// Adapter per ApiKind (openai, anthropic); null → not implemented.
+    adapters: [2]?adapter.Provider,
     /// Set by `session/cancel` (main loop); polled by the prompt worker
     /// between chunks (preemptive cancellation).
     cancel_requested: *std.atomic.Value(bool),
@@ -480,10 +481,10 @@ const PromptWorker = struct {
             self.writeError(json_rpc.ErrorCode.internal_error, "Provider not configured");
             return;
         };
-        if (provider.api == .anthropic) {
-            self.writeError(json_rpc.ErrorCode.internal_error, "Adapter not implemented: anthropic");
+        const generate = (ctx_adapters(self.ctx, provider.api) orelse {
+            self.writeError(json_rpc.ErrorCode.internal_error, "Adapter not implemented");
             return;
-        }
+        }).generate;
         const api_key = provider.api_key orelse {
             self.writeError(json_rpc.ErrorCode.internal_error, "Missing API key");
             return;
@@ -515,7 +516,7 @@ const PromptWorker = struct {
                 return;
             };
 
-            const result = self.ctx.provider.generate(allocator, input, prior_outputs.items, tool_results.items, .{
+            const result = generate(allocator, input, prior_outputs.items, tool_results.items, .{
                 .base_url = provider.url,
                 .api_key = api_key,
                 .config = config_kvs.items,
@@ -811,6 +812,11 @@ fn isCancelled(userdata: ?*anyopaque) bool {
     return ud.streaming and ud.ctx.cancel_requested.load(.monotonic);
 }
 
+/// The adapter for an ApiKind, or null.
+pub fn ctx_adapters(ctx: *const Context, api: config_mod.ApiKind) ?adapter.Provider {
+    return ctx.adapters[@intFromEnum(api)];
+}
+
 /// Busy-wait on a short critical section (the writer). `yield()` can fail on
 /// Windows (NtYieldExecution) — ignore that error and spin again.
 pub fn lockSpin(m: *std.atomic.Mutex) void {
@@ -908,7 +914,7 @@ fn testContext(a: std.mem.Allocator, writer: *Io.Writer) !*Context {
         .sessions = store,
         .writer = writer,
         .writer_lock = mutex,
-        .provider = .{ .generate = echo.generate },
+        .adapters = .{ .{ .generate = echo.generate }, null },
         .cancel_requested = cancel,
         .worker_done = worker_done,
         .http = http,

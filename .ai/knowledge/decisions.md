@@ -64,6 +64,15 @@ Format:
 - **Session history:** in-memory per-session accumulation (~20 messages) so the agent holds context (ACP model — the client sends only the new prompt)
 - **HTTP timeout:** provider request timeout included (F4 follow-up)
 
+### 2025-08-11 — Epic 2 F2: Anthropic adapter
+
+**Context:** User directed focus to the Anthropic adapter; completes the multi-provider story (both API dialects served). Grounded via live probes of DeepSeek's `/anthropic` endpoint (Anthropic-compatible) 2025-08-11.
+**Outcome:**
+- **Adapter:** `provider/anthropic.zig` behind the existing Options/Result surface — Messages API (`POST {url}/v1/messages`), headers `x-api-key` + `anthropic-version: 2023-06-01`, `max_tokens` required (config KV or default 1024), flat `tools` `{name, description, input_schema}` (no function wrapper), SSE parse (text_delta → emit, tool_use → tool_calls, thinking skipped for display / echoed for continuation)
+- **http_util:** auth generalized — `Authorization: Bearer` (openai) vs `x-api-key` (anthropic) + extra headers
+- **Dispatch:** `Context.adapters: [2]?Provider` indexed by ApiKind (openai | anthropic); server wires both; unknown → AdapterNotImplemented
+- **Continuation:** prior_outputs (assistant blocks) + tool_results → assistant message + tool_result user message
+
 ### 2025-08-11 — Epic 2 F1: multi-provider config + session model config
 
 **Context:** Epic 2 planning; user deferred ACP v2 (schema is 2.0.0-alpha.2, providers/* unstable) and chose multi-provider config built around the provider concept. Empirical DeepSeek probes (2025-08-11): model is required with no fallback (invalid → clear error); `reasoning.effort` is optional (omitted → model decides).

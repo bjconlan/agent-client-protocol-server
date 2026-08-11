@@ -238,17 +238,20 @@ fn loadEnv(map: *std.process.Environ.Map, allocator: std.mem.Allocator) !Config 
 }
 
 /// Startup validation of one provider: `GET {base}/models` with its key.
-/// Skipped when no key is configured (lazy failure at first prompt).
+/// Skipped when no key is configured (lazy failure at first prompt) or for
+/// anthropic providers (the Anthropic Messages API has no models endpoint —
+/// validated lazily on first use).
 pub fn healthCheck(
     provider: ProviderConfig,
     http: *std.http.Client,
     allocator: std.mem.Allocator,
 ) !void {
+    if (provider.api == .anthropic) return;
     const key = provider.api_key orelse return;
     const url = try @import("util/http.zig").url(allocator, provider.url, "/models");
     defer allocator.free(url);
 
-    var response = try @import("util/http.zig").request(http, allocator, url, key, null);
+    var response = try @import("util/http.zig").request(http, allocator, url, key, .{});
     defer response.deinit();
 }
 

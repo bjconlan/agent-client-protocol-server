@@ -41,6 +41,9 @@ pub fn main(init: std.process.Init) !void {
         &stdout_file_writer.interface,
         arena,
         config,
-        .{ .generate = agent_client_protocol.provider.openai.generate },
+        .{
+            .{ .generate = agent_client_protocol.provider.openai.generate },
+            .{ .generate = agent_client_protocol.provider.anthropic.generate },
+        },
     );
 }

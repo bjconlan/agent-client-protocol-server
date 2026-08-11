@@ -127,7 +127,7 @@ test "mock: serves a canned response and records the request" {
     const url = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}/models", .{mock.port()});
     defer a.free(url);
 
-    var resp = try @import("../util/http.zig").request(&http, a, url, "sk-test", null);
+    var resp = try @import("../util/http.zig").request(&http, a, url, "sk-test", .{});
     defer resp.deinit();
     const body = try @import("../util/http.zig").readAll(a, resp.reader);
     try testing.expectEqualStrings("hello", body);

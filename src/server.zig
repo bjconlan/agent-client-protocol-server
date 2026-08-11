@@ -32,7 +32,7 @@ pub fn run(
     writer: *Io.Writer,
     gpa: std.mem.Allocator,
     config: config_mod.Config,
-    provider: @import("provider/adapter.zig").Provider,
+    adapters: [2]?@import("provider/adapter.zig").Provider,
 ) !void {
     var msg_arena = std.heap.ArenaAllocator.init(gpa);
     defer msg_arena.deinit();
@@ -53,7 +53,7 @@ pub fn run(
         .sessions = &session_store,
         .writer = writer,
         .writer_lock = &writer_lock,
-        .provider = provider,
+        .adapters = adapters,
         .cancel_requested = &cancel_requested,
         .worker_done = &worker_done,
         .http = &http_client,
@@ -246,7 +246,7 @@ fn expectRun(input: []const u8, expected: []const u8) !void {
     var fixed_reader = Io.Reader.fixed(input);
     var out: Io.Writer.Allocating = .init(a);
     const cfg = testConfig(a);
-    try run(io, &fixed_reader, &out.writer, a, cfg, .{ .generate = echo.generate });
+    try run(io, &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = echo.generate }, null });
     try testing.expectEqualStrings(expected, out.written());
 }
 
@@ -385,7 +385,7 @@ test "tool-call round-trip: echo tool, permission granted, result fed back" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .generate = fakeToolGenerate });
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = fakeToolGenerate }, null });
     const actual = out.written();
 
     // tool_call (pending) notification
@@ -450,7 +450,7 @@ test "session config: set_config_option updates model, prompt uses it" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .generate = configRecordingGenerate });
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = configRecordingGenerate }, null });
     const actual = out.written();
 
     // set_config_option responses reflect the updated currentValue
@@ -460,4 +460,59 @@ test "session config: set_config_option updates model, prompt uses it" {
     try testing.expect(std.mem.indexOf(u8, fake_seen_kvs.items[0], "0.7") != null);
     // session/new advertised the fallback model
     try testing.expect(std.mem.indexOf(u8, actual, "\"currentValue\":\"test-model\"") != null);
+}
+
+/// Fake anthropic adapter: one tool call, then text (like fakeToolGenerate).
+fn fakeAnthropicGenerate(
+    allocator: std.mem.Allocator,
+    input: std.json.Value,
+    prior_outputs: []const std.json.Value,
+    tool_results: []const @import("provider/adapter.zig").ToolResult,
+    options: @import("provider/adapter.zig").Options,
+) anyerror!@import("provider/adapter.zig").Result {
+    _ = input;
+    _ = prior_outputs;
+    if (tool_results.len == 0) {
+        const calls = try allocator.alloc(@import("provider/adapter.zig").ToolCall, 1);
+        calls[0] = .{ .id = "toolu_1", .name = "echo", .arguments = "{}" };
+        return .{ .stop_reason = "tool_use", .usage = null, .tool_calls = calls, .output_items = &.{} };
+    }
+    try options.emit("anthropic answered", options.userdata);
+    return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{}, .output_items = &.{} };
+}
+
+test "worker dispatch: anthropic api provider uses the anthropic adapter slot" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const providers = a.alloc(@import("config.zig").ProviderConfig, 1) catch unreachable;
+    providers[0] = .{
+        .name = "default",
+        .api = .anthropic,
+        .url = "http://127.0.0.1:1",
+        .api_key = "sk-ant",
+        .model = "deepseek-v4-flash",
+    };
+    const cfg = @import("config.zig").Config{ .default_provider = "default", .providers = providers };
+
+    const input =
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+        \\{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
+        \\{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"1","prompt":[{"type":"text","text":"hello"}]}}
+        \\{"jsonrpc":"2.0","id":1001,"result":{"granted":true}}
+    ;
+    var fixed_reader = Io.Reader.fixed(input);
+    var out: Io.Writer.Allocating = .init(a);
+
+    var threaded = Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ null, .{ .generate = fakeAnthropicGenerate } });
+    const actual = out.written();
+
+    // tool call reported + permission + executed via the anthropic slot
+    try testing.expect(std.mem.indexOf(u8, actual, "\"sessionUpdate\":\"tool_call\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"rawOutput\":\"{}\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"text\":\"anthropic answered\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"stopReason\":\"end_turn\"") != null);
 }

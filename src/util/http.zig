@@ -37,20 +37,59 @@ pub const Response = struct {
     }
 };
 
-/// Send a JSON request. `body` null → GET, else POST with the given body.
-/// Returns a heap-allocated streaming response (allocate from an arena or
-/// free the struct yourself); the caller checks `status` and reads the body.
+/// How the API key is presented.
+pub const Auth = enum {
+    /// `Authorization: Bearer <key>` (OpenAI-compatible).
+    bearer,
+    /// `x-api-key: <key>` (Anthropic Messages API).
+    x_api_key,
+};
+
+pub const RequestOptions = struct {
+    auth: Auth = .bearer,
+    /// Additional headers (e.g. `anthropic-version`).
+    extra_headers: []const std.http.Header = &.{},
+    /// Body; null → GET.
+    body: ?[]const u8 = null,
+};
+
+/// Send a JSON request. Returns a heap-allocated streaming response
+/// (allocate from an arena or free the struct yourself); the caller checks
+/// `status` and reads the body.
 pub fn request(
     client: *std.http.Client,
     allocator: std.mem.Allocator,
     url_text: []const u8,
     api_key: []const u8,
-    body: ?[]const u8,
+    options: RequestOptions,
 ) Error!*Response {
     const uri = std.Uri.parse(url_text) catch return error.Network;
+    const body = options.body;
 
-    const auth_header = std.fmt.allocPrint(allocator, "Bearer {s}", .{api_key}) catch return error.Network;
-    defer allocator.free(auth_header);
+    // Auth header: `Authorization: Bearer <key>` or `x-api-key: <key>`, plus
+    // any extra headers, assembled into a single extra_headers slice (the
+    // `Headers` struct has no x-api-key field).
+    var headers_buf: [16]std.http.Header = undefined;
+    var header_count: usize = 0;
+    var bearer_text: []u8 = undefined;
+    switch (options.auth) {
+        .bearer => {
+            bearer_text = std.fmt.allocPrint(allocator, "Bearer {s}", .{api_key}) catch return error.Network;
+            defer allocator.free(bearer_text);
+            headers_buf[header_count] = .{ .name = "authorization", .value = bearer_text };
+            header_count += 1;
+        },
+        .x_api_key => {
+            headers_buf[header_count] = .{ .name = "x-api-key", .value = api_key };
+            header_count += 1;
+        },
+    }
+    for (options.extra_headers) |h| {
+        if (header_count < headers_buf.len) {
+            headers_buf[header_count] = h;
+            header_count += 1;
+        }
+    }
 
     const self = allocator.create(Response) catch return error.Network;
     errdefer allocator.destroy(self);
@@ -63,9 +102,10 @@ pub fn request(
         uri,
         .{
             .headers = .{
-                .authorization = .{ .override = auth_header },
+                .authorization = if (options.auth == .bearer) .{ .override = bearer_text } else .default,
                 .content_type = if (body != null) .{ .override = "application/json" } else .default,
             },
+            .extra_headers = headers_buf[0..header_count],
         },
     ) catch return error.Network;
     errdefer self.req.deinit();

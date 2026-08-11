@@ -38,7 +38,7 @@ pub fn generate(
     const url = try http_util.url(allocator, options.base_url, "/responses");
     defer allocator.free(url);
 
-    var response = try http_util.request(options.http, allocator, url, options.api_key, body);
+    var response = try http_util.request(options.http, allocator, url, options.api_key, .{ .body = body });
     defer response.deinit();
 
     return parseStream(allocator, response.reader, options);

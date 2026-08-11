@@ -25,6 +25,7 @@ pub const provider = struct {
     pub const adapter = @import("provider/adapter.zig");
     pub const echo = @import("provider/echo.zig");
     pub const openai = @import("provider/openai.zig");
+    pub const anthropic = @import("provider/anthropic.zig");
 };
 
 pub const util = struct {
@@ -46,6 +47,7 @@ test {
     std.testing.refAllDecls(provider.adapter);
     std.testing.refAllDecls(provider.echo);
     std.testing.refAllDecls(provider.openai);
+    std.testing.refAllDecls(provider.anthropic);
     std.testing.refAllDecls(util.json);
     std.testing.refAllDecls(util.http);
     std.testing.refAllDecls(util.mock_http);
