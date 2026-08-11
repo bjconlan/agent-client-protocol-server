@@ -1,13 +1,13 @@
 #!/usr/bin/env tclsh
 # Genuine e2e: drive the fossil client's ACP backend against our server.
-# Spawns agent_client_protocol as the ACP agent, runs initialize →
+# Spawns acps as the ACP agent, runs initialize →
 # session/new → session/prompt (streamed) → collects content/usage/calls.
 # Run with a provider config (config file required): e.g.
 #   ACP_CONFIG=/path/to/config.json tclsh tests/fossil-e2e.tcl
 source /home/bjc/Downloads/fossil-linux-x64-2.28/fossil-agent.tcl
 
 set cfg [dict create \
-    acp_command /home/bjc/Workspace/agent-client-protocol/zig-out/bin/agent_client_protocol \
+    acp_command /home/bjc/Workspace/agent-client-protocol-server/zig-out/bin/acps \
     model      deepseek-v4-flash \
     cwd        /tmp \
     timeout    90]

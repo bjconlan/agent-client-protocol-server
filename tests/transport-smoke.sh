@@ -9,7 +9,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-BIN=./zig-out/bin/agent_client_protocol
+BIN=./zig-out/bin/acps
 if [ ! -x "$BIN" ]; then
     echo "build first: zig build" >&2
     exit 1

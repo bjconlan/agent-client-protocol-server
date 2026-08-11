@@ -2,9 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 
-const agent_client_protocol = @import("agent_client_protocol");
-const config_mod = agent_client_protocol.config;
-const logging = agent_client_protocol.util.log;
+const acps = @import("acps");
+const config_mod = acps.config;
+const logging = acps.util.log;
 
 /// Enable all levels at compile time; `util/log.zig` filters at runtime via
 /// the `ACP_LOG` env var.
@@ -66,15 +66,15 @@ pub fn main(init: std.process.Init) !void {
     var stdin_buffer: [1024 * 1024]u8 = undefined;
     var stdin_file_reader: Io.File.Reader = .init(.stdin(), io, &stdin_buffer);
 
-    try agent_client_protocol.server.run(
+    try acps.server.run(
         io,
         &stdin_file_reader.interface,
         &stdout_file_writer.interface,
         arena,
         config,
         .{
-            .{ .generate = agent_client_protocol.provider.openai.generate },
-            .{ .generate = agent_client_protocol.provider.anthropic.generate },
+            .{ .generate = acps.provider.openai.generate },
+            .{ .generate = acps.provider.anthropic.generate },
         },
     );
 }

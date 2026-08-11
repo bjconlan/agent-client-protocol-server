@@ -2,6 +2,13 @@
 
 Project-specific terms and definitions. Add entries as concepts become load-bearing.
 
+## Project
+
+- **acps** — short name of this project (Agent Client Protocol Server, repo
+  `agent-client-protocol-server`). Also the binary/package name (`acps`), the ACP
+  `agentInfo.name` reported at `initialize`, and the default config dir
+  (`~/.config/acps/config.json`).
+
 ## Protocol & Transport
 
 - **ACP (Agent Client Protocol)** — protocol spec (zed-industries/agent-client-protocol, agentclientprotocol.com) defining JSON-RPC 2.0 message exchange between an agent host ("client") and an agent implementation ("server") over stdio.

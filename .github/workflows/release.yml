@@ -38,19 +38,19 @@ jobs:
         run: |
           EXT=""
           [[ "${{ matrix.target }}" == *-windows ]] && EXT=".exe"
-          BIN="zig-out/bin/agent_client_protocol${EXT}"
+          BIN="zig-out/bin/acps${EXT}"
           case "${{ matrix.target }}" in
-            *-linux)  ARCHIVE="acp-server-${{ matrix.target }}.tar.gz"; tar -czf "$ARCHIVE" -C zig-out/bin "$(basename "$BIN")" ;;
-            *-macos)  ARCHIVE="acp-server-${{ matrix.target }}.tar.gz"; tar -czf "$ARCHIVE" -C zig-out/bin "$(basename "$BIN")" ;;
-            *-windows) ARCHIVE="acp-server-${{ matrix.target }}.zip"; cd zig-out/bin && zip -q "../../$ARCHIVE" "$(basename "$BIN")" ;;
+            *-linux)  ARCHIVE="acps-${{ matrix.target }}.tar.gz"; tar -czf "$ARCHIVE" -C zig-out/bin "$(basename "$BIN")" ;;
+            *-macos)  ARCHIVE="acps-${{ matrix.target }}.tar.gz"; tar -czf "$ARCHIVE" -C zig-out/bin "$(basename "$BIN")" ;;
+            *-windows) ARCHIVE="acps-${{ matrix.target }}.zip"; cd zig-out/bin && zip -q "../../$ARCHIVE" "$(basename "$BIN")" ;;
           esac
           echo "archive=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: acp-server-${{ matrix.target }}
-          path: acp-server-${{ matrix.target }}.*
+          name: acps-${{ matrix.target }}
+          path: acps-${{ matrix.target }}.*
 
   release:
     name: publish release

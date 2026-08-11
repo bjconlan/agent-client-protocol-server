@@ -160,3 +160,9 @@ Format:
 **Outcome:**
 - Authorization header was sent twice (Headers override + extra_headers) → 401s; now one mechanism per auth style (bearer via `Headers.authorization`, x-api-key via extra_headers)
 - The bearer value was freed before the std client lazily flushed the request head → garbage header; value is now arena-owned and documented as such (callers pass arenas)
+
+### 2025-08-11 — Project rename: acps
+
+**Context:** Project directory renamed `agent-client-protocol` → `agent-client-protocol-server`; user asked for the short name **acps** and to break the old config path.
+**Options considered:** docs-only rename; keep `agent_client_protocol` binary; `~/.config/agent-client-protocol/` unchanged.
+**Outcome:** **Full rename to acps.** Binary/module/package name `acps` (build.zig, build.zig.zon, `@import("acps")`); ACP `agentInfo.name` is now `acps`; default config dir `~/.config/acps/config.json` (breaking — existing configs at the old path must be moved); release artifacts `acps-<target>`. README, architecture.md, glossary, test scripts updated. Historical records (`.ai/feature/*`, backlog) left as-is.

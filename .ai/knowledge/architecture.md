@@ -56,7 +56,7 @@ flowchart LR
 ```
 
 - **Config** (`config.zig`): JSON provider registry (ACP_CONFIG /
-  ~/.config/agent-client-protocol/config.json) or env fallback. Each provider:
+  ~/.config/acps/config.json) or env fallback. Each provider:
   `{api, url, api_key|api_key_env, model}`. `model` is the fallback; the
   session overrides it (or any API knob) via `session/set_config_option`
   (arbitrary KVs forwarded to the provider request).
@@ -112,5 +112,5 @@ flowchart LR
   is required — the server has no env fallback for provider settings) then
   `tclsh tests/fossil-e2e.tcl`.
 - Example provider config: `examples/config.example.json`.
-- Smoke: pipe JSON-RPC lines into `zig-out/bin/agent_client_protocol` with
+- Smoke: pipe JSON-RPC lines into `zig-out/bin/acps` with
   `ACP_CONFIG` + `ACP_LOG=debug` to trace the whole edge chain.

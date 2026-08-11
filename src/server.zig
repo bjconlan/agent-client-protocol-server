@@ -319,7 +319,7 @@ test "line without trailing newline at EOF is processed" {
 
 test "initialize handshake: full response, verbatim id" {
     const input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1,\"clientCapabilities\":{},\"clientInfo\":{\"name\":\"fossil-agent\",\"version\":\"1.0\"}}}\n";
-    const expected = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"sessionCapabilities\":{},\"promptCapabilities\":{}},\"authMethods\":[],\"agentInfo\":{\"name\":\"agent-client-protocol\",\"version\":\"0.1.0\"}}}\n";
+    const expected = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"sessionCapabilities\":{},\"promptCapabilities\":{}},\"authMethods\":[],\"agentInfo\":{\"name\":\"acps\",\"version\":\"0.1.0\"}}}\n";
     try expectRun(input, expected);
 }
 
@@ -336,7 +336,7 @@ test "fossil client flow: initialize → session/new → session/prompt (streame
         \\{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"1","prompt":[{"type":"text","text":"hello"}]}}
     ;
     const expected =
-        \\{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{},"promptCapabilities":{}},"authMethods":[],"agentInfo":{"name":"agent-client-protocol","version":"0.1.0"}}}
+        \\{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{},"promptCapabilities":{}},"authMethods":[],"agentInfo":{"name":"acps","version":"0.1.0"}}}
         \\{"jsonrpc":"2.0","id":2,"result":{"sessionId":"1","configOptions":[{"id":"model","name":"Model","category":"model","value":{"type":"select","currentValue":"test-model","options":["test-model"]}}]}}
         \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}}}
         \\{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}

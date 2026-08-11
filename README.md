@@ -1,12 +1,12 @@
-# Agent Client Protocol — Server
+# acps — Agent Client Protocol Server
 
 A CLI-based [Agent Client Protocol](https://agentclientprotocol.com) server implemented in Zig.
 
 ## What is this?
 
-This project is an **ACP server** that runs as a CLI process and communicates with
-clients (agent hosts/editors) over **stdio** using JSON-RPC 2.0, as defined by the
-Agent Client Protocol specification.
+This project is **acps** (Agent Client Protocol Server) — an ACP server that runs as a CLI
+process and communicates with clients (agent hosts/editors) over **stdio** using
+JSON-RPC 2.0, as defined by the Agent Client Protocol specification.
 
 The server brokers requests between an ACP-speaking client and a model provider
 API. Providers are declared in a config file and served through adapter
@@ -56,7 +56,7 @@ persistence, a Chat Completions adapter.
 ## Building
 
 ```sh
-zig build              # Debug build (dev) → zig-out/bin/agent_client_protocol
+zig build              # Debug build (dev) → zig-out/bin/acps
 zig build --release    # ReleaseSmall (default release target, ~600 KB) — pass
                        # --release=fast / --release=safe to override
 ```
@@ -70,7 +70,7 @@ connection — stdin EOF (client closing the pipe) terminates it cleanly.
 
 ```sh
 # e.g. pipe a request in; it answers and waits for more input
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ./zig-out/bin/agent_client_protocol
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ./zig-out/bin/acps
 ```
 
 `zig build run` does the same but with the terminal attached to stdin — exit
@@ -95,7 +95,7 @@ stdio transport transcript.
 ### Config file (multi-provider)
 
 A JSON config file (from `$ACP_CONFIG` or
-`~/.config/agent-client-protocol/config.json`) declares named providers:
+`~/.config/acps/config.json`) declares named providers:
 
 ```json
 {
@@ -135,14 +135,14 @@ live there; the server's own env surface is intentionally minimal:
 
 | Variable | Purpose |
 |----------|---------|
-| `ACP_CONFIG` | Provider config — a **file path** or **inline JSON** (auto-detected: a leading `{` is taken as the JSON itself, anything else as a path). Defaults to `~/.config/agent-client-protocol/config.json` |
+| `ACP_CONFIG` | Provider config — a **file path** or **inline JSON** (auto-detected: a leading `{` is taken as the JSON itself, anything else as a path). Defaults to `~/.config/acps/config.json` |
 | `ACP_LOG_LEVEL` | Log level: `err` / `warn` / `info` / `debug` (default `info`) |
 
 For example, inline (handy in k8s — the ConfigMap value *is* the config):
 
 ```sh
 ACP_CONFIG='{"providers":{"default":{"api":"openai","url":"https://api.deepseek.com/v1","api_key_env":"DEEPSEEK_API_KEY","model":"deepseek-v4-flash"}}}' \
-  ./zig-out/bin/agent_client_protocol
+  ./zig-out/bin/acps
 ```
 
 A missing config is a clear startup error naming the expected source.

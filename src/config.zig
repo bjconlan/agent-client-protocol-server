@@ -2,8 +2,8 @@
 //!
 //! Two sources, in priority order:
 //! 1. A JSON config file — `$ACP_CONFIG` or
-//!    `$XDG_CONFIG_HOME/agent-client-protocol/config.json` (default
-//!    `~/.config/agent-client-protocol/config.json`):
+//!    `$XDG_CONFIG_HOME/acps/config.json` (default
+//!    `~/.config/acps/config.json`):
 //!    ```json
 //!    { "default_provider": "deepseek",
 //!      "providers": { "deepseek": { "api": "openai",
@@ -50,7 +50,7 @@ pub const Config = struct {
     providers: []ProviderConfig,
 
     pub const default_model = "deepseek-v4-flash";
-    pub const config_dir = "agent-client-protocol/config.json";
+    pub const config_dir = "acps/config.json";
 
     /// Load configuration from `ACP_CONFIG` or the default XDG path.
     ///
@@ -70,7 +70,7 @@ pub const Config = struct {
                 return loadFile(io, allocator, map, path);
             } else |_| {}
         }
-        std.log.err("no config found — set ACP_CONFIG (a file path or inline JSON starting with '{{') or create ~/.config/agent-client-protocol/config.json (see examples/config.example.json)", .{});
+        std.log.err("no config found — set ACP_CONFIG (a file path or inline JSON starting with '{{') or create ~/.config/acps/config.json (see examples/config.example.json)", .{});
         return error.InvalidConfig;
     }
 

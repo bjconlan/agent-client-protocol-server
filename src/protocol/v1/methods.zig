@@ -23,7 +23,7 @@ const tool_iteration_cap = 8;
 /// Version of this registry's protocol.
 pub const protocol_version: u16 = 1;
 
-pub const agent_name = "agent-client-protocol";
+pub const agent_name = "acps";
 pub const agent_version = "0.1.0";
 
 /// Signal that a handler started async work that owns the turn's output
