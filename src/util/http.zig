@@ -153,7 +153,9 @@ pub fn readAll(
     allocator: std.mem.Allocator,
     reader: *std.Io.Reader,
 ) ![]u8 {
-    return reader.allocRemaining(allocator, .unlimited);
+    const body = try reader.allocRemaining(allocator, .unlimited);
+    std.log.scoped(.http).debug("  response body: {s}", .{body});
+    return body;
 }
 
 /// Build a URL from a base URL (no trailing slash) + path suffix.
