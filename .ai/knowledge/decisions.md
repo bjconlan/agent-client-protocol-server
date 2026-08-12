@@ -178,3 +178,11 @@ Format:
 **Context:** CI `zig fmt --check .` failed on the windows runner, listing every Zig file. Root cause: default `core.autocrlf=true` on Windows checkouts produces CRLF line endings; `zig fmt` (0.16) treats CRLF as unformatted (verified locally: CRLF copy fails fmt, LF copy passes).
 **Options considered:** `git config core.autocrlf false` per job; re-normalize in workflow; commit `.gitattributes`.
 **Outcome:** **`.gitattributes` with `* text=auto eol=lf`** — forces LF on checkout for all text files (repo contains no tracked binaries), fixing fmt on Windows runners without per-job config.
+
+### 2025-08-11 — Library API: parse naming + arena-owned Parsed
+
+**Context:** Making `acps` usable as a dependency surfaced two library-API issues: the JSON-RPC entry point was `parseLine` (unintuitive), and the parsed `Message` was arena-owned with no deinit.
+**Outcome:**
+- Renamed `parseLine` → `parse`.
+- `parse` now returns `Parsed { message, arena }`; `Parsed.deinit` releases everything at once. This is the only leak-free ownership model: std.json 0.16's dynamic parser has no recursive `Value.deinit`, and under `.alloc_always` it drops number-token strings (allocated, then discarded when converted to `.integer`/`.float`) that are unreachable and unfreeable piecemeal. Verified with a leak-checked test (testing allocator) covering nested objects, arrays, and numbers.
+- Removed the build.zig `preferred_optimize_mode = .ReleaseSmall`: `-Doptimize` is registered normally so library consumers can dictate the mode; the release workflow passes `--release=small` explicitly.

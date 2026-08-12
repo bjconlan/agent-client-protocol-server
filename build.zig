@@ -13,12 +13,13 @@ pub fn build(b: *std.Build) void {
     // for restricting supported target set are available.
     const target = b.standardTargetOptions(.{});
     // Standard optimization options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
-    // set a preferred release mode, allowing the user to decide how to optimize.
-    // Default release target is ReleaseSmall (small static binary); pass
-    // `-Doptimize=Debug` for development builds. Tests are pinned to Debug
-    // below so the testing allocator keeps its safety checks.
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
+    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. No preferred
+    // mode is set, so plain `zig build` defaults to Debug and `zig build --release`
+    // to ReleaseFast; pass `-Doptimize=ReleaseSmall` (or `--release=small`) for the
+    // size-optimized builds the GitHub release workflow uses. Registering the
+    // option normally also lets library consumers dictate the optimization mode
+    // when taking `acps` as a dependency.
+    const optimize = b.standardOptimizeOption(.{});
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`

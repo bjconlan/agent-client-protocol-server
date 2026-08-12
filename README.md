@@ -57,12 +57,12 @@ persistence, a Chat Completions adapter.
 
 ```sh
 zig build              # Debug build (dev) → zig-out/bin/acps
-zig build --release    # ReleaseSmall (default release target, ~600 KB) — pass
-                       # --release=fast / --release=safe to override
+zig build --release    # ReleaseFast — pass --release=small for the size-
+                       # optimized build used by the release artifacts
 ```
 
 `zig build test` always runs the suite in Debug (the testing allocator keeps
-its safety checks); `--release` builds optimize for binary size by default.
+its safety checks); `--release` builds default to ReleaseFast.
 
 The binary is an ACP server: it reads newline-delimited JSON-RPC 2.0 messages
 from stdin and writes responses/notifications to stdout. It waits for a client
@@ -75,6 +75,43 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ./z
 
 `zig build run` does the same but with the terminal attached to stdin — exit
 with Ctrl-D (EOF).
+
+## Use as a library
+
+The repo is a library + CLI split: `src/root.zig` exposes the public API
+(protocol JSON-RPC framing, session/server machinery, provider adapters,
+config, utils), while the CLI (`src/main.zig`) is a separate module — no
+`main` conflicts for consumers. The package (`build.zig.zon` `.paths`) ships
+only `build.zig`, `build.zig.zon`, and `src/`.
+
+Add it as a dependency (the `src` artifact from a release tag works too):
+
+```zig
+// build.zig.zon
+.dependencies = .{
+    .acps = .{
+        .url = "https://github.com/bjconlan/agent-client-protocol-server/archive/refs/tags/<date-time-stamp>.tar.gz",
+        .hash = "...", // fill with `zig fetch --save <url>`
+    },
+},
+```
+
+```zig
+// build.zig
+const acps = b.dependency("acps", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("acps", acps.module("acps"));
+```
+
+```zig
+// usage — `parse` returns a `Parsed` whose arena owns all message memory
+const acps = @import("acps");
+var parsed = try acps.protocol.json_rpc.parse(allocator, line);
+defer parsed.deinit();
+switch (parsed.message) {
+    .request => |r| …,  // r.method, r.params
+    else => …,
+}
+```
 
 ## Testing
 

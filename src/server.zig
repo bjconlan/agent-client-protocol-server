@@ -84,7 +84,7 @@ pub fn run(
         std.log.scoped(.transport).debug("[in] {s}", .{line});
         if (line.len == 0) continue; // transport-level keepalive line
 
-        const message = json_rpc.parseLine(msg_alloc, line) catch |err| switch (err) {
+        const parsed = json_rpc.parse(msg_alloc, line) catch |err| switch (err) {
             error.ParseError => {
                 respondErrorLocked(&ctx, msg_alloc, .null, json_rpc.ErrorCode.parse_error, "Parse error") catch break;
                 continue;
@@ -95,7 +95,7 @@ pub fn run(
             },
         };
 
-        dispatch(&ctx, msg_alloc, message) catch break;
+        dispatch(&ctx, msg_alloc, parsed.message) catch break;
     }
 
     // EOF: cancel a still-running prompt worker and join it, then exit

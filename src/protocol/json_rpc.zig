@@ -11,7 +11,8 @@
 //! - `id` echoed verbatim (union: null | int | string) — clients correlate
 //!   with string equality, so no normalization or type coercion
 //! - batches (JSON arrays) are invalid requests; ACP never batches
-//! - slices/values in `Message` are owned by the arena used for parsing
+//! - slices/values in `Message` are owned by the arena `parse` creates;
+//!   release everything at once via `Parsed.deinit`
 
 const std = @import("std");
 
@@ -31,7 +32,8 @@ pub const ErrorObject = struct {
 };
 
 /// A parsed JSON-RPC 2.0 message. All slice/value fields are owned by the
-/// allocator passed to `parseLine` (callers typically use a per-message arena).
+/// arena created by `parse`; release everything at once via `Parsed.deinit`
+/// (or reuse the caller's arena as in the server loop).
 pub const Message = union(enum) {
     request: struct {
         id: RequestId,
@@ -54,6 +56,21 @@ pub const Message = union(enum) {
     },
 };
 
+/// A parsed message plus the arena owning all of its memory. This is what
+/// `parse` returns: `deinit` releases everything at once — strings, params/
+/// result JSON values, dropped number tokens, and the parse scaffolding.
+/// (0.16's dynamic `std.json.Value` has no recursive deinit and leaks number
+/// tokens under `.alloc_always`, so an arena is the leak-free way to own a
+/// parsed message.)
+pub const Parsed = struct {
+    message: Message,
+    arena: std.heap.ArenaAllocator,
+
+    pub fn deinit(self: *Parsed) void {
+        self.arena.deinit();
+    }
+};
+
 /// JSON-RPC 2.0 error codes plus the ACP/ client conventions used here.
 pub const ErrorCode = struct {
     pub const parse_error: i32 = -32700;
@@ -65,19 +82,26 @@ pub const ErrorCode = struct {
     pub const request_cancelled: i32 = -32800;
 };
 
-/// Errors from `parseLine`, mapped to JSON-RPC codes by the caller:
+/// Errors from `parse`, mapped to JSON-RPC codes by the caller:
 /// `error.ParseError` → -32700, `error.InvalidRequest` → -32600.
 pub const ParseError = error{ ParseError, InvalidRequest };
 
 /// Parse one newline-delimited JSON-RPC 2.0 message.
 ///
-/// Strict envelope validation: the document must be an object with
-/// `"jsonrpc":"2.0"`, shaped as one of request / notification / response /
-/// error response. Malformed JSON is `error.ParseError`; envelope violations
-/// are `error.InvalidRequest`. A JSON array (batch) is `error.InvalidRequest`.
-pub fn parseLine(allocator: std.mem.Allocator, line: []const u8) ParseError!Message {
-    var scanner = std.json.Scanner.initCompleteInput(allocator, line);
-    const value = std.json.Value.jsonParse(allocator, &scanner, .{
+/// All message memory (strings, params/result JSON values, and parse
+/// scaffolding) is owned by a per-call arena over `allocator`; the returned
+/// `Parsed.deinit` releases everything at once. Strict envelope validation:
+/// the document must be an object with `"jsonrpc":"2.0"`, shaped as one of
+/// request / notification / response / error response. Malformed JSON is
+/// `error.ParseError`; envelope violations are `error.InvalidRequest`. A JSON
+/// array (batch) is `error.InvalidRequest`.
+pub fn parse(allocator: std.mem.Allocator, line: []const u8) ParseError!Parsed {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+
+    var scanner = std.json.Scanner.initCompleteInput(a, line);
+    const value = std.json.Value.jsonParse(a, &scanner, .{
         .allocate = .alloc_always,
         .max_value_len = line.len,
     }) catch return error.ParseError;
@@ -101,13 +125,13 @@ pub fn parseLine(allocator: std.mem.Allocator, line: []const u8) ParseError!Mess
         };
         const params = root.get("params") orelse .null;
         if (id_v) |iv| {
-            return .{ .request = .{
+            return .{ .message = .{ .request = .{
                 .id = try requestId(iv),
                 .method = method,
                 .params = params,
-            } };
+            } }, .arena = arena };
         }
-        return .{ .notification = .{ .method = method, .params = params } };
+        return .{ .message = .{ .notification = .{ .method = method, .params = params } }, .arena = arena };
     }
 
     // No method: must be a response or error response, with an id.
@@ -130,18 +154,18 @@ pub fn parseLine(allocator: std.mem.Allocator, line: []const u8) ParseError!Mess
             .string => |s| s,
             else => return error.InvalidRequest,
         };
-        return .{ .error_response = .{
+        return .{ .message = .{ .error_response = .{
             .id = id,
             .error_object = .{
                 .code = @intCast(code),
                 .message = message,
                 .data = e.get("data"),
             },
-        } };
+        } }, .arena = arena };
     }
 
     if (root.get("result")) |rv| {
-        return .{ .response = .{ .id = id, .result = rv } };
+        return .{ .message = .{ .response = .{ .id = id, .result = rv } }, .arena = arena };
     }
 
     return error.InvalidRequest;
@@ -243,16 +267,13 @@ pub fn serializeError(
 
 const testing = std.testing;
 
-fn parse(allocator: std.mem.Allocator, line: []const u8) ParseError!Message {
-    return parseLine(allocator, line);
-}
-
 test "parse request with integer id" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const m = try parse(arena.allocator(),
+    const parsed = try parse(arena.allocator(),
         \\{"jsonrpc":"2.0","id":7,"method":"session/new","params":{"foo":"bar"}}
     );
+    const m = parsed.message;
     switch (m) {
         .request => |r| {
             try testing.expectEqual(RequestId{ .int = 7 }, r.id);
@@ -273,9 +294,10 @@ test "parse request with integer id" {
 test "parse request with string id echoes verbatim" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const m = try parse(arena.allocator(),
+    const parsed = try parse(arena.allocator(),
         \\{"jsonrpc":"2.0","id":"req-42","method":"initialize","params":{}}
     );
+    const m = parsed.message;
     switch (m) {
         .request => |r| {
             try testing.expect(r.id == .string);
@@ -289,18 +311,20 @@ test "parse request with string id echoes verbatim" {
 test "parse request with null id" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const m = try parse(arena.allocator(),
+    const parsed = try parse(arena.allocator(),
         \\{"jsonrpc":"2.0","id":null,"method":"ping","params":{}}
     );
+    const m = parsed.message;
     try testing.expect(m == .request);
 }
 
 test "parse notification without id" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const m = try parse(arena.allocator(),
+    const parsed = try parse(arena.allocator(),
         \\{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s1"}}
     );
+    const m = parsed.message;
     switch (m) {
         .notification => |n| try testing.expectEqualStrings("session/cancel", n.method),
         else => return error.TestUnexpectedResult,
@@ -310,9 +334,10 @@ test "parse notification without id" {
 test "parse response" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const m = try parse(arena.allocator(),
+    const parsed = try parse(arena.allocator(),
         \\{"jsonrpc":"2.0","id":1,"result":{"ok":true}}
     );
+    const m = parsed.message;
     switch (m) {
         .response => |r| {
             try testing.expectEqual(RequestId{ .int = 1 }, r.id);
@@ -325,9 +350,10 @@ test "parse response" {
 test "parse error response" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const m = try parse(arena.allocator(),
+    const parsed = try parse(arena.allocator(),
         \\{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found"}}
     );
+    const m = parsed.message;
     switch (m) {
         .error_response => |e| {
             try testing.expectEqual(ErrorCode.method_not_found, e.error_object.code);
@@ -438,15 +464,28 @@ test "serialize response round-trips result" {
     );
 }
 
+test "Parsed.deinit frees a parsed message (leak-checked)" {
+    // Parse with the leak-checking testing allocator; Parsed.deinit must
+    // release every allocation via its arena — including number tokens that
+    // std.json's dynamic parser drops under .alloc_always (they become
+    // unreachable once converted to .integer/.float, so only an arena can
+    // reclaim them).
+    var parsed = try parse(testing.allocator,
+        \\{"jsonrpc":"2.0","id":"req-7","method":"initialize","params":{"foo":"bar","n":[1,2,"three"],"num":42}}
+    );
+    defer parsed.deinit();
+}
+
 test "parse→serialize round-trip: notification and response" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
     // notification round-trips to its canonical serialization
-    const n = try parse(a,
+    const parsed = try parse(a,
         \\{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s1"}}
     );
+    const n = parsed.message;
     var out: std.Io.Writer.Allocating = .init(a);
     const writer = &out.writer;
     switch (n) {
