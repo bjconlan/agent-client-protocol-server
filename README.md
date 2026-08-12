@@ -39,9 +39,14 @@ config-option selector), `session/set_config_option` (per-session API knobs),
 permissions. Multi-provider config with two API dialects, both live-verified
 (DeepSeek via `/v1` Responses and `/anthropic` Messages).
 
-Deferred items (Epic 3, `.ai/backlog/3.md`): per-session provider switching
-(waits on the stabilized ACP v2 `providers/*`), ACP v2 support, session
-persistence, a Chat Completions adapter.
+**Epic 3 (current, `.ai/backlog/3.md`):** MCP tool support — acps gains an MCP
+**client** (`src/mcp_client/`, stdio transport) that connects to external MCP
+servers and exposes their tools through the existing ACP tool flow (agent-side
+execution, client permission grants); the module is reusable standalone and
+extractable later. Plus the deferred items: per-session provider switching
+(waits on the stabilized ACP v2 `providers/*`), ACP v2 support (whose MCP
+capability surface consumes `mcp_client`), session persistence, and a Chat
+Completions adapter.
 
 ## Prerequisites
 
