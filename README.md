@@ -113,6 +113,21 @@ switch (parsed.message) {
 }
 ```
 
+### API surface
+
+Exported by `src/root.zig` (`@import("acps")`):
+
+| Module | Contents |
+|--------|----------|
+| `acps.protocol.json_rpc` | Wire format: `parse` (→ `Parsed`, arena-owned `Message`), `Message` (request/notification/response/error_response), `RequestId`, `ErrorObject`, `ErrorCode`, `serializeRequest/Notification/Response/Error` |
+| `acps.protocol.v1` | ACP v1 `types` + `methods` (initialize, session/new, session/prompt, …) |
+| `acps.protocol.v2` | ACP v2 method registry (v2-ready dispatch seam) |
+| `acps.server` | `run()` — the stdio transport loop |
+| `acps.config` | `Config`, `ApiKind` (`openai` \| `anthropic`), `ProviderConfig` |
+| `acps.provider` | Adapter interface + `openai`, `anthropic`, `echo` implementations |
+| `acps.tools` | Server-side tool registry |
+| `acps.util` | `json` helpers, `http` client, `log`, `mock_http` (test-only) |
+
 ## Testing
 
 ```sh
