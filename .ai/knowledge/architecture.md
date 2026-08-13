@@ -50,9 +50,9 @@ flowchart LR
     C[ACP client] -- stdio JSON-RPC 2.0 --> M[main.zig loop]
     M --> R[protocol/v1 registry: initialize, session/new, set_config_option, session/prompt, session/cancel]
     R --> W[PromptWorker thread]
-    W --> A[adapter per ApiKind: openai Responses | anthropic Messages]
+    W --> A["adapter per ApiKind: openai Responses | anthropic Messages"]
     A -- HTTPS --> P[provider API]
-    M <-- permission slot --> W   # session/request_permission response routing
+    M <--> |permission slot| W
 ```
 
 ### MCP client module (feature/mcp-client-module, 2026-08-11)
