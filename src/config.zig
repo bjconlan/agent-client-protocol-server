@@ -15,6 +15,11 @@
 //!    `api_key` or `api_key_env` supplies the key (env resolved at load);
 //!    `model` is the FALLBACK model — the session may override it (or any
 //!    other API-request knob) via `session/set_config_option`.
+//!    Optional `mcpServers` section (MCP convention):
+//!    `{ "mcpServers": { "files": { "command": "npx",
+//!        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+//!        "env": { "KEY": "value" } } } }` — parsed/validated here;
+//!    spawned and wired into the ACP tool flow by the MCP integration.
 //! 2. Environment fallback (no file): a single "default" provider from
 //!    `OPENAI_API_KEY` / `OPENAI_URL` / `OPENAI_MODEL`.
 
@@ -45,9 +50,28 @@ pub const ProviderConfig = struct {
     model: []const u8,
 };
 
+/// An environment variable override for an MCP server child process.
+pub const EnvKV = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+/// A configured MCP server (stdio transport) per the MCP `mcpServers`
+/// convention. Spawned by the MCP integration task.
+pub const McpServerConfig = struct {
+    name: []const u8,
+    /// Command to spawn (resolved via PATH by `std.process.spawn`).
+    command: []const u8,
+    args: []const []const u8,
+    /// Extra environment variables applied to the child process.
+    env: []const EnvKV,
+};
+
 pub const Config = struct {
     default_provider: []const u8,
     providers: []ProviderConfig,
+    /// Optional MCP servers; empty when the `mcpServers` section is absent.
+    mcp_servers: []McpServerConfig = &.{},
 
     pub const default_model = "deepseek-v4-flash";
     pub const config_dir = "acps/config.json";
@@ -85,6 +109,14 @@ pub const Config = struct {
     /// The default provider.
     pub fn default(self: *const Config) ?*const ProviderConfig {
         return self.resolve(self.default_provider);
+    }
+
+    /// Look up an MCP server by name, or null.
+    pub fn mcpServer(self: *const Config, name: []const u8) ?*const McpServerConfig {
+        for (self.mcp_servers) |*m| {
+            if (std.mem.eql(u8, m.name, name)) return m;
+        }
+        return null;
     }
 };
 
@@ -171,9 +203,103 @@ fn parseConfig(
     }
 
     if (default_name.len == 0) default_name = providers.items[0].name;
+
+    // Optional `mcpServers` section (MCP convention).
+    var mcp_servers: std.ArrayList(McpServerConfig) = .empty;
+    if (root.get("mcpServers")) |msv| {
+        const mcp_obj = switch (msv) {
+            .object => |o| o,
+            else => {
+                std.log.warn("config: 'mcpServers' must be an object", .{});
+                return error.InvalidConfig;
+            },
+        };
+        var mit = mcp_obj.iterator();
+        while (mit.next()) |entry| {
+            const ms = try parseMcpServer(allocator, entry.key_ptr.*, entry.value_ptr.*);
+            try mcp_servers.append(allocator, ms);
+        }
+    }
+
     return .{
         .default_provider = try allocator.dupe(u8, default_name),
         .providers = try providers.toOwnedSlice(allocator),
+        .mcp_servers = try mcp_servers.toOwnedSlice(allocator),
+    };
+}
+
+fn parseMcpServer(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    value: std.json.Value,
+) !McpServerConfig {
+    const obj = switch (value) {
+        .object => |o| o,
+        else => {
+            std.log.warn("config: mcp server '{s}' must be an object", .{name});
+            return error.InvalidConfig;
+        },
+    };
+
+    const command = switch (obj.get("command") orelse {
+        std.log.warn("config: mcp server '{s}': missing command", .{name});
+        return error.InvalidConfig;
+    }) {
+        .string => |s| s,
+        else => {
+            std.log.warn("config: mcp server '{s}': command must be a string", .{name});
+            return error.InvalidConfig;
+        },
+    };
+
+    var args: std.ArrayList([]const u8) = .empty;
+    if (obj.get("args")) |av| {
+        const arr = switch (av) {
+            .array => |a| a,
+            else => {
+                std.log.warn("config: mcp server '{s}': args must be an array", .{name});
+                return error.InvalidConfig;
+            },
+        };
+        for (arr.items) |item| switch (item) {
+            .string => |s| try args.append(allocator, try allocator.dupe(u8, s)),
+            else => {
+                std.log.warn("config: mcp server '{s}': args must be strings", .{name});
+                return error.InvalidConfig;
+            },
+        };
+    }
+
+    var env: std.ArrayList(EnvKV) = .empty;
+    if (obj.get("env")) |ev| {
+        const env_obj = switch (ev) {
+            .object => |o| o,
+            else => {
+                std.log.warn("config: mcp server '{s}': env must be an object", .{name});
+                return error.InvalidConfig;
+            },
+        };
+        var it = env_obj.iterator();
+        while (it.next()) |e| {
+            const value_text = switch (e.value_ptr.*) {
+                .string => |s| s,
+                else => {
+                    std.log.warn("config: mcp server '{s}': env values must be strings", .{name});
+                    return error.InvalidConfig;
+                },
+            };
+            try env.append(allocator, .{
+                .key = try allocator.dupe(u8, e.key_ptr.*),
+                .value = try allocator.dupe(u8, value_text),
+            });
+        }
+    }
+
+    return .{
+        .name = try allocator.dupe(u8, name),
+        .command = try allocator.dupe(u8, command),
+        .args = try args.toOwnedSlice(allocator),
+        .env = try env.toOwnedSlice(allocator),
     };
 }
 
@@ -355,4 +481,106 @@ test "load: ACP_CONFIG inline JSON dispatches on the first character" {
     const p = cfg.default().?;
     try testing.expectEqualStrings("sk-inline", p.api_key.?);
     try testing.expectEqualStrings("m", p.model);
+}
+
+test "loadFileAt: parses and validates mcpServers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var map = try testEnv(a);
+    defer map.deinit();
+
+    const json =
+        \\{"providers":{"p":{"api":"openai","url":"http://p"}},
+        \\ "mcpServers":{
+        \\  "files": {"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"],"env":{"DEEPSEEK_API_KEY":"sk-x"}},
+        \\  "bare": {"command":"echo"}
+        \\}}
+    ;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(testing.io, .{ .sub_path = "mcp.json", .data = json });
+
+    const cfg = try loadFileAt(testing.io, a, &map, dir.dir, "mcp.json");
+    try testing.expectEqual(@as(usize, 2), cfg.mcp_servers.len);
+
+    const files = cfg.mcpServer("files").?;
+    try testing.expectEqualStrings("npx", files.command);
+    try testing.expectEqual(@as(usize, 3), files.args.len);
+    try testing.expectEqualStrings("-y", files.args[0]);
+    try testing.expectEqualStrings("@modelcontextprotocol/server-filesystem", files.args[1]);
+    try testing.expectEqual(@as(usize, 1), files.env.len);
+    try testing.expectEqualStrings("DEEPSEEK_API_KEY", files.env[0].key);
+    try testing.expectEqualStrings("sk-x", files.env[0].value);
+
+    const bare = cfg.mcpServer("bare").?;
+    try testing.expectEqualStrings("echo", bare.command);
+    try testing.expectEqual(@as(usize, 0), bare.args.len);
+    try testing.expectEqual(@as(usize, 0), bare.env.len);
+
+    try testing.expect(cfg.mcpServer("nope") == null);
+}
+
+test "loadFileAt: mcpServers absent leaves the list empty" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var map = try testEnv(a);
+    defer map.deinit();
+
+    const json =
+        \\{"providers":{"p":{"api":"openai","url":"http://p"}}}
+    ;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(testing.io, .{ .sub_path = "c.json", .data = json });
+
+    const cfg = try loadFileAt(testing.io, a, &map, dir.dir, "c.json");
+    try testing.expectEqual(@as(usize, 0), cfg.mcp_servers.len);
+}
+
+test "loadFileAt: invalid mcpServers rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var map = try testEnv(a);
+    defer map.deinit();
+
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const cases = [_][]const u8{
+        // server not an object
+        \\{"providers":{"p":{"api":"openai","url":"http://p"}},"mcpServers":{"files":42}}
+        ,
+        // missing command
+        \\{"providers":{"p":{"api":"openai","url":"http://p"}},"mcpServers":{"files":{"args":[]}}}
+        ,
+        // non-string command
+        \\{"providers":{"p":{"api":"openai","url":"http://p"}},"mcpServers":{"files":{"command":7}}}
+        ,
+        // args not an array
+        \\{"providers":{"p":{"api":"openai","url":"http://p"}},"mcpServers":{"files":{"command":"x","args":"nope"}}}
+        ,
+        // non-string arg
+        \\{"providers":{"p":{"api":"openai","url":"http://p"}},"mcpServers":{"files":{"command":"x","args":[1]}}}
+        ,
+        // env not an object
+        \\{"providers":{"p":{"api":"openai","url":"http://p"}},"mcpServers":{"files":{"command":"x","env":[]}}}
+        ,
+        // non-string env value
+        \\{"providers":{"p":{"api":"openai","url":"http://p"}},"mcpServers":{"files":{"command":"x","env":{"K":1}}}}
+        ,
+        // mcpServers not an object
+        \\{"providers":{"p":{"api":"openai","url":"http://p"}},"mcpServers":[]}
+        ,
+    };
+    for (cases, 0..) |json, i| {
+        try dir.dir.writeFile(testing.io, .{ .sub_path = "bad.json", .data = json });
+        try testing.expectError(error.InvalidConfig, loadFileAt(testing.io, a, &map, dir.dir, "bad.json"));
+        _ = i;
+    }
 }

@@ -185,6 +185,31 @@ A JSON config file (from `$ACP_CONFIG` or
 
 See `examples/config.example.json` for a full example.
 
+### MCP servers (optional)
+
+An optional `mcpServers` section (per the MCP convention) declares MCP
+servers acps can call tools on, over stdio:
+
+```json
+"mcpServers": {
+  "files": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    "env": { "SOME_KEY": "value" }
+  }
+}
+```
+
+| Field | Purpose |
+|-------|---------|
+| `mcpServers.<name>.command` | **Required** — command to spawn (resolved via PATH) |
+| `mcpServers.<name>.args` | Optional — argument list (strings) |
+| `mcpServers.<name>.env` | Optional — extra environment variables for the child |
+
+Invalid server definitions (missing `command`, non-string args/env values)
+are startup errors naming the offending server. Wiring MCP tools into the
+ACP tool flow is in progress (Epic 3).
+
 ### Environment variables
 
 **A config file is required** — all provider settings (keys, URLs, models)

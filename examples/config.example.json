@@ -19,5 +19,15 @@
       "api_key_env": "OPENAI_API_KEY",
       "model": "gpt-4o"
     }
+  },
+  "mcpServers": {
+    "files": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": {}
+    },
+    "bare-echo": {
+      "command": "echo"
+    }
   }
 }
