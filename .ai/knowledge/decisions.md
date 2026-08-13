@@ -179,7 +179,7 @@ Format:
 **Options considered:** `git config core.autocrlf false` per job; re-normalize in workflow; commit `.gitattributes`.
 **Outcome:** **`.gitattributes` with `* text=auto eol=lf`** — forces LF on checkout for all text files (repo contains no tracked binaries), fixing fmt on Windows runners without per-job config.
 
-### 2026-08-11 — Library API: parse naming + arena-owned Parsed
+### 2026-08-12 — Library API: parse naming + arena-owned Parsed
 
 **Context:** Making `acps` usable as a dependency surfaced two library-API issues: the JSON-RPC entry point was `parseLine` (unintuitive), and the parsed `Message` was arena-owned with no deinit.
 **Outcome:**
@@ -187,30 +187,30 @@ Format:
 - `parse` now returns `Parsed { message, arena }`; `Parsed.deinit` releases everything at once. This is the only leak-free ownership model: std.json 0.16's dynamic parser has no recursive `Value.deinit`, and under `.alloc_always` it drops number-token strings (allocated, then discarded when converted to `.integer`/`.float`) that are unreachable and unfreeable piecemeal. Verified with a leak-checked test (testing allocator) covering nested objects, arrays, and numbers.
 - Removed the build.zig `preferred_optimize_mode = .ReleaseSmall`: `-Doptimize` is registered normally so library consumers can dictate the mode; the release workflow passes `--release=small` explicitly.
 
-### 2026-08-11 — MCP client as a standalone module (mcp_client)
+### 2026-08-13 — MCP client as a standalone module (mcp_client)
 
 **Context:** acps needs to call external MCP servers' tools on behalf of the ACP client. Epic 3 (`.ai/backlog/3.md`) merged an MCP feature set; the first task is the client module.
 **Options considered:** ACP-coupled helper inside `src/tools/`; generic in-repo module; separate repository now.
 **Outcome:** **Generic in-repo module `src/mcp_client/`** exposed as its own Zig module (`b.addModule("mcp_client", …)`) — MCP is a standalone protocol (only JSON-RPC 2.0 framing is shared, via a declared `json_rpc` module import, not a relative path), so the module is consumable standalone and extractable to its own package later without a rewrite. stdio transport first (streamable-HTTP deferred); `tools/*`, `resources/*`, `prompts/*` methods; scripted `MockTransport` for transcript tests (mirrors `util/mock_http.zig`).
 
-### 2026-08-11 — MCP client API: arena ownership + transport vtable
+### 2026-08-13 — MCP client API: arena ownership + transport vtable
 
 **Context:** Consistent with the `Parsed` arena pattern, the MCP client copies results into the caller's allocator; negotiated state (protocol version, server info, capabilities, last error) lives in the client's arena for its lifetime. Transports implement a `writeLine`/`readLine`/`deinit` vtable so protocol tests run against a scripted mock while `StdioTransport` spawns the real child process.
 **Outcome:** Accepted as designed. Flush-after-write is required (the stdio writer is buffered); `Child.kill` reaps (no `wait` after); `Io.Mutex` is extern (init via `Io.Mutex.init`, `lockUncancelable`).
 
-### 2026-08-11 — MCP tools merged into the ACP tool surface
+### 2026-08-13 — MCP tools merged into the ACP tool surface
 
 **Context:** Wire the MCP client into the ACP flow: the model should be able to call MCP-hosted tools with the existing permission/result flow.
 **Options considered:** separate MCP tool path bypassing permissions; global dispatch registry; per-tool context on `Tool`.
 **Outcome:** **Merged surface with per-tool ctx.** `tools.Tool` gained `ctx: ?*anyopaque` (default null — static entries unchanged) and `execute(ctx, …)`; `mcp_bridge` spawns/initializes configured servers (`connectAll`, per-server failures warn + skip), builds the merged tool surface (`buildToolSurface`: static + MCP tools named `"<server>:<tool>"` with `parameters` = MCP inputSchema JSON text, `ctx` → per-tool `Dispatch`), and `mcpExecute` routes `tools/call`. The existing `runToolCall` flow (report → `session/request_permission` → execute → result) is unchanged. `json_rpc.zig` became a shared module dependency (a file cannot live in two modules) — the acps module now imports it via the `json_rpc` module, and it has its own test target.
 
-### 2026-08-11 — MCP tool name namespacing
+### 2026-08-13 — MCP tool name namespacing
 
 **Context:** Multiple MCP servers may expose tools with the same name (e.g. two servers with `read_file`); the model's tool surface must be collision-free.
 **Options considered:** raw tool names; server-prefixed names.
 **Outcome:** **`"<server>:<tool>"`** — the ACP client sees `files:read_file`; `Dispatch` holds the original tool name for `tools/call`.
 
-### 2026-08-11 — Config redesign considered: single-provider env config (REVIEWED, NOT IMPLEMENTED)
+### 2026-08-13 — Config redesign considered: single-provider env config (REVIEWED, NOT IMPLEMENTED)
 
 **Context:** Re-read the ACP spec. v1 has no provider-selection surface — `session/new` params are `cwd` + `mcpServers` (both required) + `additionalDirectories`; model selection is per-session via `configOptions` (category `"model"`) + `session/set_config_option`. The pinned v2 alpha (`2.0.0-alpha.2`) has no provider/partner surface either — `providers/*` and `Partner` live in the UNSTABLE spec section. Conclusion: each executable should bind a single LLM provider; the multi-provider config file (Epic 2) is arguably beyond what ACP v1 needs.
 **Proposed (NOT implemented — user deferred):** replace the config file's `providers` section with three env vars — `ACPS_API` (`openai`|`anthropic`), `ACPS_API_URL`, `ACPS_API_KEY` — required at load with clear errors naming the missing one; also works when acps is embedded as a library. Config file keeps only `mcpServers`. Model required per session (no `provider.model` fallback); optional `effort` config option. Key validation: startup `/models` health check (openai) today; a per-session `/models` fetch for a real model dropdown was considered — note Anthropic has no models endpoint (asymmetric).

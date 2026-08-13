@@ -55,7 +55,7 @@ flowchart LR
     M <--> |permission slot| W
 ```
 
-### MCP client module (feature/mcp-client-module, 2026-08-11)
+### MCP client module (feature/mcp-client-module, 2026-08-13)
 
 ```mermaid
 flowchart LR
@@ -167,7 +167,7 @@ flowchart LR
 - Smoke: pipe JSON-RPC lines into `zig-out/bin/acps` with
   `ACP_CONFIG` + `ACP_LOG=debug` to trace the whole edge chain.
 
-## Future directions (reviewed 2026-08-11 — not implemented)
+## Future directions (reviewed 2026-08-13 — not implemented)
 
 - **Single-provider env config** — ACP v1 binds one provider per executable
   (no provider surface in the pinned v1/v2-alpha schemas; `providers/*` +
