@@ -221,6 +221,7 @@ Format: `<prefix>/<short-snaked-description>`
 
 ## Additional Conventions
 
+- **Dating discipline** — date new `.ai/` entries (decision register, plans, backlog, knowledge-base updates) with the **date of creation** (today, UTC — `date -u +%Y-%m-%d`); never copy dates from existing content. Historical records keep their original dates.
 - Always check `.ai/knowledge/` for relevant context before starting new work
 - When in doubt about a term or concept, check `glossary.md` first, then ask the user
 - Plans are living documents — update them as understanding evolves
