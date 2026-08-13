@@ -10,8 +10,8 @@ key, and the list of models they serve. The first listed model is the default;
 a session can switch models at runtime — the stable-v1 multi-LLM mechanism.
 
 **In scope:**
-<!-- 2025-08-11T12:00: User amendment — drop the models list; a single model fallback + free session model selection -->
-<!-- 2025-08-11T14:00: User amendment — default provider = first listed when default_provider absent -->
+<!-- 2026-08-11T12:00: User amendment — drop the models list; a single model fallback + free session model selection -->
+<!-- 2026-08-11T14:00: User amendment — default provider = first listed when default_provider absent -->
 - JSON config file (`~/.config/agent-client-protocol/config.json`, overridable
   via `ACP_CONFIG`); `default_provider` is optional — **the first listed
   provider is the default** when absent:
@@ -42,7 +42,7 @@ a session can switch models at runtime — the stable-v1 multi-LLM mechanism.
   - Key: `api_key_env` (resolve from env) or inline `api_key`
 - Provider registry: config → resolved providers (key resolved, defaults
   applied); the `Provider` adapter interface resolves per `api`
-<!-- 2025-08-11T12:30: User amendment — arbitrary session KVs forwarded to the LLM config -->
+<!-- 2026-08-11T12:30: User amendment — arbitrary session KVs forwarded to the LLM config -->
 - **Session config is a generic KV surface**: any `session/set_config_option` value is stored on the session and forwarded to the provider adapter, which applies the request fields it understands (`model`, `reasoning.effort`, `temperature`, `max_output_tokens`, `top_p`, …) and skips unknowns with a log. `model` is one of the KVs (worker resolves the fallback: session value or provider.model). No lock-down — newer knobs work without config changes.
 - **Session model config** (ACP v1):
   - `session/new` response gains `configOptions`: a `model` select
@@ -172,7 +172,7 @@ flowchart TD
 - `.ai/knowledge/references/acp-schema-v1.json` — `NewSessionResponse`,
   `SessionConfigOption`, `SessionConfigOptionCategory`, `SessionConfigSelect`,
   `SetSessionConfigOptionRequest/Response`
-- Live API probes (2025-08-11): DeepSeek model required/no-fallback, effort
+- Live API probes (2026-08-11): DeepSeek model required/no-fallback, effort
   optional — recorded in decisions.md
 - `~/Downloads/fossil-linux-x64-2.28/fossil-agent.tcl` — client behavior
 

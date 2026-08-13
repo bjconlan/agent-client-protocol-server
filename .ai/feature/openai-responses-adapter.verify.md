@@ -55,7 +55,7 @@ Validates the implementation against the plan's verification strategy.
 | Binary: lazy-fail + startup health-check paths | PASS (manual) |
 
 ## Exceptions / follow-ups
-- **Live smoke test with the user's DeepSeek key — DONE (2025-08-10/11):
+- **Live smoke test with the user's DeepSeek key — DONE (2026-08-10/11):
   basic prompt + full tool-call round-trip verified live.** Integration bugs
   found and fixed during the live test (see below), recorded in the F4/F5
   plan outcomes

@@ -133,7 +133,7 @@ MCP server role, library extraction.
 - All checkpoints passed: yes
 - Full test suite: 74/74
 - Live smoke: real reference filesystem MCP server (npx) spawned, initialized,
-  and listed tools at startup with no MCP errors (2025-08-11)
+  and listed tools at startup with no MCP errors (2026-08-11)
 
 ### Knowledge updates
 - Decisions: MCP tools merged into the ACP tool surface (ctx seam);

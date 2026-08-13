@@ -23,7 +23,7 @@ System architecture decisions and rationale. Updated whenever a decision is revi
                  └──────────────────────────┘
 ```
 
-## MVP scope (confirmed 2025-08-10)
+## MVP scope (confirmed 2026-08-10)
 
 Usable-for-basic-use ACP v1 server, OpenAI Responses API only, no config file, minimal env vars (`OPENAI_API_KEY`). Deployed locally first; cross-platform + GitHub Actions release builds later. The first feature (planning stage) defines the exact MVP method set — likely: `initialize`, `session/new`, `session/prompt` (+ streaming `session/update`), minimal `tool/call` support for client-provided tools.
 
@@ -36,7 +36,7 @@ Key principles:
 
 ---
 
-## Current State (2025-08-11 — session handoff)
+## Current State (2026-08-11 — session handoff)
 
 **Status:** all work committed on `main`; 56/56 tests, fmt clean, cross-compiles.
 Epic 1 (MVP) + Epic 2 (multi-provider) complete. Epic 3 current (see
@@ -55,7 +55,7 @@ flowchart LR
     M <-- permission slot --> W   # session/request_permission response routing
 ```
 
-### MCP client module (feature/mcp-client-module, 2025-08-11)
+### MCP client module (feature/mcp-client-module, 2026-08-11)
 
 ```mermaid
 flowchart LR
@@ -154,7 +154,7 @@ flowchart LR
 - **DeepSeek specifics**: flat (non-nested) tool shape; must echo the model's
   previous output items (reasoning_text) to continue after tools; model is
   required with no fallback (invalid → clear error); `reasoning.effort`
-  optional (omit → model decides); `deepseek-v4-pro` unavailable (2025-08-11).
+  optional (omit → model decides); `deepseek-v4-pro` unavailable (2026-08-11).
 
 ### Live testing
 
@@ -167,7 +167,7 @@ flowchart LR
 - Smoke: pipe JSON-RPC lines into `zig-out/bin/acps` with
   `ACP_CONFIG` + `ACP_LOG=debug` to trace the whole edge chain.
 
-## Future directions (reviewed 2025-08-11 — not implemented)
+## Future directions (reviewed 2026-08-11 — not implemented)
 
 - **Single-provider env config** — ACP v1 binds one provider per executable
   (no provider surface in the pinned v1/v2-alpha schemas; `providers/*` +

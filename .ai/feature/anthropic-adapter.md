@@ -98,7 +98,7 @@ sequenceDiagram
 - **API:** transcript with fake anthropic provider; mock HTTP round-trip;
   live DeepSeek `/anthropic` smoke (basic + tool call)
 
-## Integration Contract (Anthropic Messages API, verified live 2025-08-11)
+## Integration Contract (Anthropic Messages API, verified live 2026-08-11)
 
 - `POST {url}/v1/messages`; headers `x-api-key` + `anthropic-version:
   2023-06-01`; `max_tokens` required; `messages` roles user/assistant;

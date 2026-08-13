@@ -12,49 +12,49 @@ Format:
 
 ---
 
-### 2025-08-10 — Project: ACP server in Zig
+### 2026-08-10 — Project: ACP server in Zig
 
 **Context:** Project setup session; directory `agent-client-protocol`, no existing source.
 **Options considered:** Zig vs Rust vs Go vs TypeScript.
 **Outcome:** **Zig** (latest stable, via mise). Rationale: static binaries, explicit memory management suits a stdio protocol server, stdlib covers JSON/HTTP. User-specified.
 
-### 2025-08-10 — Initial provider target
+### 2026-08-10 — Initial provider target
 
 **Context:** README/workspace discussion — support multiple provider APIs, one first. Research (see `references/acp-openai-research.md`) compared Chat Completions vs Responses API against the ACP model.
 **Options considered:** OpenAI Chat Completions; OpenAI Responses API; both initially.
 **Outcome:** **OpenAI Responses API** first. Rationale: modern unified API; typed `input`/output items and SSE event families map directly to ACP content blocks and `turn/update` streaming; has compaction/input_tokens/cancel endpoints matching ACP lifecycle needs. Chat Completions remains a possible later adapter — the `provider/adapter.zig` interface isolates the choice.
 
-### 2025-08-10 — OpenAI-compatible base URL (`OPENAI_URL`)
+### 2026-08-10 — OpenAI-compatible base URL (`OPENAI_URL`)
 
-**Context:** User only has a DeepSeek API key; needs the server to talk to `api.deepseek.com`. Verified 2025-08-10: DeepSeek now documents a **Responses API** (api-docs.deepseek.com `/guides/responses_api`, `/api/create-response` — SSE streaming, built-in tools, multi-turn) with `https://api.deepseek.com` as base and `/v1` as the OpenAI-compatible alias.
+**Context:** User only has a DeepSeek API key; needs the server to talk to `api.deepseek.com`. Verified 2026-08-10: DeepSeek now documents a **Responses API** (api-docs.deepseek.com `/guides/responses_api`, `/api/create-response` — SSE streaming, built-in tools, multi-turn) with `https://api.deepseek.com` as base and `/v1` as the OpenAI-compatible alias.
 **Options considered:** hardcode `api.openai.com`; env var override; provider profiles.
 **Outcome:** **`OPENAI_URL` env var** — base URL for the provider adapter, default `https://api.openai.com/v1`; endpoint paths appended (e.g. `/responses`). DeepSeek usage: `OPENAI_URL=https://api.deepseek.com/v1`. MVP stays env-only (no config file).
 
-### 2025-08-10 — ACP version: v1 now, v2-ready
+### 2026-08-10 — ACP version: v1 now, v2-ready
 
 **Context:** ACP repo ships `schema/v1` (168 defs, 55 method types — sessions, threads, turns, terminals, elicitation, permissions, prompts, session config/mode) and `schema/v2` (172 defs, adds plan content, MCP capabilities, resource links, diffs). User chose v1 for now but wants v2 supportable.
 **Options considered:** v1 only; v2 only; v1 now + v2-ready.
 **Outcome:** **v1 primary, v2-ready.** Mechanism: `InitializeRequest.protocolVersion` is a uint16 (bumped only for breaking changes; non-breaking additions via capabilities). Design: shared JSON-RPC framing + core session/thread/turn machinery; versioned method registries (`protocol/methods/v1.zig`, later `v2.zig`) selected at the `initialize` handshake.
 
-### 2025-08-10 — Dependencies: stdlib-only
+### 2026-08-10 — Dependencies: stdlib-only
 
 **Context:** Zig stdlib provides JSON (`std.json`), HTTP (`std.http.Client`), stdio (`std.io`).
 **Options considered:** zero deps vs third-party JSON/HTTP/JSON-RPC libs.
 **Outcome:** **Stdlib-only** initially; `build.zig.zon` stays empty until a real need appears. Revisit during planning.
 
-### 2025-08-10 — Formatting/conformance: zig fmt + pre-commit
+### 2026-08-10 — Formatting/conformance: zig fmt + pre-commit
 
 **Context:** User required standard Zig idiom and conformance as part of pre-commit githook.
 **Options considered:** plain `.git/hooks` script; versioned `.githooks/` + `core.hooksPath`; pre-commit/husky frameworks.
 **Outcome:** **Versioned `.githooks/pre-commit`** running `zig fmt --check` + `zig build test`, wired via `git config core.hooksPath .githooks`. No extra (non-Zig) dependencies.
 
-### 2025-08-10 — Toolchain management: mise
+### 2026-08-10 — Toolchain management: mise
 
 **Context:** Zig not installed on system; user requested `mise use zig@latest`.
 **Options considered:** system package (needs sudo), manual tarball, mise.
 **Outcome:** **mise** — user-level, no sudo, `mise.toml` pins `zig@0.16.0`.
 
-### 2025-08-10 — F5: tool-call round-trip
+### 2026-08-10 — F5: tool-call round-trip
 
 **Context:** F5 planning; user confirmed scope and answered the permission-model question: **permission persistence is client-side** (session/workspace-bound preferences are the client's policy — e.g. fossil maps bot policy → auto-grant).
 **Outcome:**
@@ -64,18 +64,18 @@ Format:
 - **Session history:** in-memory per-session accumulation (~20 messages) so the agent holds context (ACP model — the client sends only the new prompt)
 - **HTTP timeout:** provider request timeout included (F4 follow-up)
 
-### 2025-08-11 — Epic 2 F2: Anthropic adapter
+### 2026-08-11 — Epic 2 F2: Anthropic adapter
 
-**Context:** User directed focus to the Anthropic adapter; completes the multi-provider story (both API dialects served). Grounded via live probes of DeepSeek's `/anthropic` endpoint (Anthropic-compatible) 2025-08-11.
+**Context:** User directed focus to the Anthropic adapter; completes the multi-provider story (both API dialects served). Grounded via live probes of DeepSeek's `/anthropic` endpoint (Anthropic-compatible) 2026-08-11.
 **Outcome:**
 - **Adapter:** `provider/anthropic.zig` behind the existing Options/Result surface — Messages API (`POST {url}/v1/messages`), headers `x-api-key` + `anthropic-version: 2023-06-01`, `max_tokens` required (config KV or default 1024), flat `tools` `{name, description, input_schema}` (no function wrapper), SSE parse (text_delta → emit, tool_use → tool_calls, thinking skipped for display / echoed for continuation)
 - **http_util:** auth generalized — `Authorization: Bearer` (openai) vs `x-api-key` (anthropic) + extra headers
 - **Dispatch:** `Context.adapters: [2]?Provider` indexed by ApiKind (openai | anthropic); server wires both; unknown → AdapterNotImplemented
 - **Continuation:** prior_outputs (assistant blocks) + tool_results → assistant message + tool_result user message
 
-### 2025-08-11 — Epic 2 F1: multi-provider config + session model config
+### 2026-08-11 — Epic 2 F1: multi-provider config + session model config
 
-**Context:** Epic 2 planning; user deferred ACP v2 (schema is 2.0.0-alpha.2, providers/* unstable) and chose multi-provider config built around the provider concept. Empirical DeepSeek probes (2025-08-11): model is required with no fallback (invalid → clear error); `reasoning.effort` is optional (omitted → model decides).
+**Context:** Epic 2 planning; user deferred ACP v2 (schema is 2.0.0-alpha.2, providers/* unstable) and chose multi-provider config built around the provider concept. Empirical DeepSeek probes (2026-08-11): model is required with no fallback (invalid → clear error); `reasoning.effort` is optional (omitted → model decides).
 **Outcome:**
 - **Config file (JSON, stdlib):** `~/.config/agent-client-protocol/config.json` (or `ACP_CONFIG`); `{default_provider, providers: {name: {api, url, api_key|api_key_env, models[]}}}`; `models[]` required ≥1, **first = default model**; `api` discriminates adapters (`openai` now, `anthropic` → AdapterNotImplemented until that feature)
 - **Effort dropped** from config + adapter (API falls back to the model's choice); re-add as a one-line change if wanted
@@ -85,7 +85,7 @@ Format:
 - **v2 note:** the provider registry is shaped to map to the stabilized v2 `providers/*` methods later
 
 
-### 2025-08-10 — F4: OpenAI Responses adapter + cancellation architecture
+### 2026-08-10 — F4: OpenAI Responses adapter + cancellation architecture
 
 **Context:** F4 planning; user confirmed config vars incl. model + effort (target `deepseek-v4-flash`, `high`), lazy-fail on missing key, startup auth/health validation.
 **Outcome:**
@@ -95,7 +95,7 @@ Format:
 - **Provider:** OpenAI Responses API (`/responses`, stream SSE); delta → agent_message_chunk; usage → usage_update; completed → end_turn; failed → error
 - **Tests:** mock `std.http.Server` on ephemeral port serving scripted streams
 
-### 2025-08-10 — F3: session lifecycle + prompt flow
+### 2026-08-10 — F3: session lifecycle + prompt flow
 
 **Context:** F3 planning; session-oriented ACP v1 core. User confirmed scope and the synchronous model.
 **Outcome:**
@@ -107,7 +107,7 @@ Format:
 - **Provider seam:** minimal adapter interface + `EchoProvider` (whole text block per chunk) in `provider/`; OpenAI in F4
 - **Capabilities:** `sessionCapabilities: {}` unchanged (now truthful)
 
-### 2025-08-10 — F2: version-namespaced protocol + initialize contract
+### 2026-08-10 — F2: version-namespaced protocol + initialize contract
 
 **Context:** F2 planning; user requested namespaced v1/v2 protocol support ("2 can ref 1") and MVP-surface capability advertisement.
 **Outcome:**
@@ -117,7 +117,7 @@ Format:
 - **Capabilities:** advertise the **MVP surface** (user decision): `agentCapabilities: {sessionCapabilities: {}, promptCapabilities: {}}` — baseline sessions + text-only prompts; `authMethods: []`, `agentInfo: {name: agent-client-protocol, version 0.1.0}`
 - **Terminology:** ACP v1/v2 are **session-oriented** (session/new → session/prompt → session/update → PromptResponse); no Thread/Turn types — glossary/README/backlog corrected
 
-### 2025-08-10 — JSON-RPC transport conventions (F1)
+### 2026-08-10 — JSON-RPC transport conventions (F1)
 
 **Context:** F1 planning; grounded in ACP v1 schema and the fossil client contract (`~/Downloads/fossil-linux-x64-2.28/fossil-agent.tcl`, read-only).
 **Outcome:**
@@ -127,59 +127,59 @@ Format:
 - **stdin EOF:** flush stdout, exit 0 — never write to a closed pipe (client explicitly warns of stderr pollution)
 - **Batches:** treated as invalid request (-32600); ACP never batches
 
-<!-- 2025-08-10T23:10: Implementation amendment — std.Io reader buffer bounds line length -->
+<!-- 2026-08-10T23:10: Implementation amendment — std.Io reader buffer bounds line length -->
 - **Line cap:** ~~16 MiB per line; exceeding → -32700 parse error, loop continues~~ → 1 MiB stdin reader buffer; `StreamTooLong` → discard oversized line, answer -32700, connection stays alive. Revisit with dynamic growth if tool results (F5) exceed it
 - **Logging:** stderr only; stdout carries protocol messages only
 
-### 2025-08-10 — MVP-first scope & deployment path
+### 2026-08-10 — MVP-first scope & deployment path
 
 **Context:** Step 6 (project overview) — asked about timeframes, deployment, milestones.
 **Options considered:** phased feature roadmap vs MVP-first; multi-provider vs single provider.
 **Outcome:** **MVP-first** — a usable-for-basic-use ACP v1 server with only the OpenAI Responses adapter and no config file (minimal env vars, `OPENAI_API_KEY`). Deployment: local dev → cross-platform → GitHub Actions release builds (later). First feature defines the exact MVP method set (likely `initialize`, `session/new`, `thread/create`, `turn/create` + streaming `turn/update`, minimal `tool/call`).
 
-### 2025-08-10 — Workflow conventions
+### 2026-08-10 — Workflow conventions
 
 **Context:** Step 5 of project setup — asked about custom branch types and workflow preferences.
 **Options considered:** adding `docs/`, `perf/`, `refactor/`, `experiment/` prefixes; adjusting review depth or test thresholds.
 **Outcome:** **Defaults, no customizations.** Keep `feature/` → planning+implementation+review, `hotfix/` → implementation+review, `chore/` → implementation. Squash-merge to main, plans in `.ai/{branch-type}/{name}.md`, decisions in this register. User accepted defaults without additions.
 
-### 2025-08-10 — Project scaffolding
+### 2026-08-10 — Project scaffolding
 
 **Context:** Directory structure for the new project.
 **Options considered:** hand-written skeleton vs `zig init` scaffold.
 **Outcome:** **`zig init`** (user-suggested) as the base, then reorganized into `src/protocol/`, `src/provider/`, `src/util/` per the confirmed structure.
 
-### 2025-08-11 — Edge tracing via std.log (ACP_LOG)
+### 2026-08-11 — Edge tracing via std.log (ACP_LOG)
 
 **Context:** Need debug visibility of everything on the system edge (client session, provider HTTP) without a third-party logger.
 **Outcome:** `util/log.zig` + a root `std_options.logFn` override in the binary (tests keep Zig defaults). Scopes: `transport` (stdio in/out lines), `http` (one line per exchange — `{url} {method} body=…` request, `{url} {status} body=…` response, URL-first per user preference), `provider` (SSE lines). Runtime level from `ACP_LOG` (err|warn|info|debug, default info). HTTP bodies: non-streaming via `readAll`; streaming via the provider scope.
 
-### 2025-08-11 — http_util fixes found via the trace work
+### 2026-08-11 — http_util fixes found via the trace work
 
 **Context:** Building the trace exposed two real bugs.
 **Outcome:**
 - Authorization header was sent twice (Headers override + extra_headers) → 401s; now one mechanism per auth style (bearer via `Headers.authorization`, x-api-key via extra_headers)
 - The bearer value was freed before the std client lazily flushed the request head → garbage header; value is now arena-owned and documented as such (callers pass arenas)
 
-### 2025-08-11 — Project rename: acps
+### 2026-08-11 — Project rename: acps
 
 **Context:** Project directory renamed `agent-client-protocol` → `agent-client-protocol-server`; user asked for the short name **acps** and to break the old config path.
 **Options considered:** docs-only rename; keep `agent_client_protocol` binary; `~/.config/agent-client-protocol/` unchanged.
 **Outcome:** **Full rename to acps.** Binary/module/package name `acps` (build.zig, build.zig.zon, `@import("acps")`); ACP `agentInfo.name` is now `acps`; default config dir `~/.config/acps/config.json` (breaking — existing configs at the old path must be moved); release artifacts `acps-<target>`. README, architecture.md, glossary, test scripts updated. Historical records (`.ai/feature/*`, backlog) left as-is.
 
-### 2025-08-11 — Release builds: fossil-style artifacts + date-time tags
+### 2026-08-11 — Release builds: fossil-style artifacts + date-time tags
 
 **Context:** User wanted the GitHub release build to mirror fossil's distribution scheme, replacing "fossil" with "acps", with release builds only on pushed tags and tags reflecting the date-time.
 **Options considered:** keep `v*` tags + generic triple names; auto-build on every push.
 **Outcome:** **fossil-style, tag-gated.** The release workflow triggers only when a tag matching the fossil snapshot date-time format (12- or 14-digit UTC stamp, e.g. `20260801193352`) is pushed; the tag is the version in artifact names `acps-<platform>-<stamp>` for `linux-x64`, `mac-arm`, `mac-x64`, `pi`, `src`, `w32`, `w64`, `win-arm` (`.tar.gz` for unix/pi/src, `.zip` for windows). All binary targets cross-compiled on the ubuntu runner via `zig build -Dtarget=`; `src` is a `git archive` tarball. All 7 target triples verified locally.
 
-### 2025-08-11 — .gitattributes: force LF on checkout (Windows CI fmt failure)
+### 2026-08-11 — .gitattributes: force LF on checkout (Windows CI fmt failure)
 
 **Context:** CI `zig fmt --check .` failed on the windows runner, listing every Zig file. Root cause: default `core.autocrlf=true` on Windows checkouts produces CRLF line endings; `zig fmt` (0.16) treats CRLF as unformatted (verified locally: CRLF copy fails fmt, LF copy passes).
 **Options considered:** `git config core.autocrlf false` per job; re-normalize in workflow; commit `.gitattributes`.
 **Outcome:** **`.gitattributes` with `* text=auto eol=lf`** — forces LF on checkout for all text files (repo contains no tracked binaries), fixing fmt on Windows runners without per-job config.
 
-### 2025-08-11 — Library API: parse naming + arena-owned Parsed
+### 2026-08-11 — Library API: parse naming + arena-owned Parsed
 
 **Context:** Making `acps` usable as a dependency surfaced two library-API issues: the JSON-RPC entry point was `parseLine` (unintuitive), and the parsed `Message` was arena-owned with no deinit.
 **Outcome:**
@@ -187,30 +187,30 @@ Format:
 - `parse` now returns `Parsed { message, arena }`; `Parsed.deinit` releases everything at once. This is the only leak-free ownership model: std.json 0.16's dynamic parser has no recursive `Value.deinit`, and under `.alloc_always` it drops number-token strings (allocated, then discarded when converted to `.integer`/`.float`) that are unreachable and unfreeable piecemeal. Verified with a leak-checked test (testing allocator) covering nested objects, arrays, and numbers.
 - Removed the build.zig `preferred_optimize_mode = .ReleaseSmall`: `-Doptimize` is registered normally so library consumers can dictate the mode; the release workflow passes `--release=small` explicitly.
 
-### 2025-08-11 — MCP client as a standalone module (mcp_client)
+### 2026-08-11 — MCP client as a standalone module (mcp_client)
 
 **Context:** acps needs to call external MCP servers' tools on behalf of the ACP client. Epic 3 (`.ai/backlog/3.md`) merged an MCP feature set; the first task is the client module.
 **Options considered:** ACP-coupled helper inside `src/tools/`; generic in-repo module; separate repository now.
 **Outcome:** **Generic in-repo module `src/mcp_client/`** exposed as its own Zig module (`b.addModule("mcp_client", …)`) — MCP is a standalone protocol (only JSON-RPC 2.0 framing is shared, via a declared `json_rpc` module import, not a relative path), so the module is consumable standalone and extractable to its own package later without a rewrite. stdio transport first (streamable-HTTP deferred); `tools/*`, `resources/*`, `prompts/*` methods; scripted `MockTransport` for transcript tests (mirrors `util/mock_http.zig`).
 
-### 2025-08-11 — MCP client API: arena ownership + transport vtable
+### 2026-08-11 — MCP client API: arena ownership + transport vtable
 
 **Context:** Consistent with the `Parsed` arena pattern, the MCP client copies results into the caller's allocator; negotiated state (protocol version, server info, capabilities, last error) lives in the client's arena for its lifetime. Transports implement a `writeLine`/`readLine`/`deinit` vtable so protocol tests run against a scripted mock while `StdioTransport` spawns the real child process.
 **Outcome:** Accepted as designed. Flush-after-write is required (the stdio writer is buffered); `Child.kill` reaps (no `wait` after); `Io.Mutex` is extern (init via `Io.Mutex.init`, `lockUncancelable`).
 
-### 2025-08-11 — MCP tools merged into the ACP tool surface
+### 2026-08-11 — MCP tools merged into the ACP tool surface
 
 **Context:** Wire the MCP client into the ACP flow: the model should be able to call MCP-hosted tools with the existing permission/result flow.
 **Options considered:** separate MCP tool path bypassing permissions; global dispatch registry; per-tool context on `Tool`.
 **Outcome:** **Merged surface with per-tool ctx.** `tools.Tool` gained `ctx: ?*anyopaque` (default null — static entries unchanged) and `execute(ctx, …)`; `mcp_bridge` spawns/initializes configured servers (`connectAll`, per-server failures warn + skip), builds the merged tool surface (`buildToolSurface`: static + MCP tools named `"<server>:<tool>"` with `parameters` = MCP inputSchema JSON text, `ctx` → per-tool `Dispatch`), and `mcpExecute` routes `tools/call`. The existing `runToolCall` flow (report → `session/request_permission` → execute → result) is unchanged. `json_rpc.zig` became a shared module dependency (a file cannot live in two modules) — the acps module now imports it via the `json_rpc` module, and it has its own test target.
 
-### 2025-08-11 — MCP tool name namespacing
+### 2026-08-11 — MCP tool name namespacing
 
 **Context:** Multiple MCP servers may expose tools with the same name (e.g. two servers with `read_file`); the model's tool surface must be collision-free.
 **Options considered:** raw tool names; server-prefixed names.
 **Outcome:** **`"<server>:<tool>"`** — the ACP client sees `files:read_file`; `Dispatch` holds the original tool name for `tools/call`.
 
-### 2025-08-11 — Config redesign considered: single-provider env config (REVIEWED, NOT IMPLEMENTED)
+### 2026-08-11 — Config redesign considered: single-provider env config (REVIEWED, NOT IMPLEMENTED)
 
 **Context:** Re-read the ACP spec. v1 has no provider-selection surface — `session/new` params are `cwd` + `mcpServers` (both required) + `additionalDirectories`; model selection is per-session via `configOptions` (category `"model"`) + `session/set_config_option`. The pinned v2 alpha (`2.0.0-alpha.2`) has no provider/partner surface either — `providers/*` and `Partner` live in the UNSTABLE spec section. Conclusion: each executable should bind a single LLM provider; the multi-provider config file (Epic 2) is arguably beyond what ACP v1 needs.
 **Proposed (NOT implemented — user deferred):** replace the config file's `providers` section with three env vars — `ACPS_API` (`openai`|`anthropic`), `ACPS_API_URL`, `ACPS_API_KEY` — required at load with clear errors naming the missing one; also works when acps is embedded as a library. Config file keeps only `mcpServers`. Model required per session (no `provider.model` fallback); optional `effort` config option. Key validation: startup `/models` health check (openai) today; a per-session `/models` fetch for a real model dropdown was considered — note Anthropic has no models endpoint (asymmetric).

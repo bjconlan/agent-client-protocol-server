@@ -58,7 +58,7 @@ ErrorObject = struct { code: i32, message: []const u8, data: ?std.json.Value }
 - Line buffer: fixed cap (16 MiB) — exceeding it is a parse error (-32700)
   and the loop continues
 
-<!-- 2025-08-10T23:10: Implementation — std.Io reader buffer bounds line length via takeDelimiter StreamTooLong; fixed 16 MiB buffer is wasteful, 1 MiB chosen for MVP with discard+recovery -->
+<!-- 2026-08-10T23:10: Implementation — std.Io reader buffer bounds line length via takeDelimiter StreamTooLong; fixed 16 MiB buffer is wasteful, 1 MiB chosen for MVP with discard+recovery -->
 - ~~Line buffer: fixed cap (16 MiB) — exceeding it is a parse error (-32700) and the loop continues~~
 - Line buffer: 1 MiB stdin reader buffer; `takeDelimiter` `StreamTooLong` → discard the oversized line (`discardDelimiterInclusive`) and answer -32700, connection stays alive. Revisit with dynamic growth if tool results (F5) exceed it.
 

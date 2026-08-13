@@ -1,13 +1,13 @@
 # Research: ACP spec + OpenAI Responses API
 
 ## Date
-2025-08-10
+2026-08-10
 
 ## Sources consulted
 - **Primary (saved locally):**
-  - ACP schema v1: `acp-schema-v1.json` (zed-industries/agent-client-protocol, `schema/v1/schema.json`, fetched 2025-08-10)
+  - ACP schema v1: `acp-schema-v1.json` (zed-industries/agent-client-protocol, `schema/v1/schema.json`, fetched 2026-08-10)
   - ACP schema v2: `acp-schema-v2.json` (same repo, `schema/v2/schema.json`)
-  - OpenAI Responses API extraction: `openai-api.md` (openai/openai-openapi `openapi.json`, fetched 2025-08-10)
+  - OpenAI Responses API extraction: `openai-api.md` (openai/openai-openapi `openapi.json`, fetched 2026-08-10)
 - **Web (not saved):**
   - https://agentclientprotocol.com (hosted spec docs)
   - https://platform.openai.com/docs (API guides)

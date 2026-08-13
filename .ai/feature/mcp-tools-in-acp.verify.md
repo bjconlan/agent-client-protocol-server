@@ -42,7 +42,7 @@
 - Live smoke against a real MCP server (e.g. the reference filesystem server
   via `npx`) — deferred; the scripted transcripts cover the protocol paths.
 
-## Live smoke (2025-08-11)
+## Live smoke (2026-08-11)
 
 | Criterion | Result |
 |-----------|--------|

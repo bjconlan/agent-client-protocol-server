@@ -1,6 +1,6 @@
 # OpenAI API — Responses API reference (extracted)
 
-Curated extraction from `openai/openai-openapi` `openapi.json` (fetched 2025-08-10). Full spec: https://github.com/openai/openai-openapi — re-fetch for updates.
+Curated extraction from `openai/openai-openapi` `openapi.json` (fetched 2026-08-10). Full spec: https://github.com/openai/openai-openapi — re-fetch for updates.
 
 ## Endpoints (non-beta `/responses`)
 
