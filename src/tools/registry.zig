@@ -18,11 +18,16 @@ pub const Tool = struct {
     kind: []const u8,
     /// JSON schema for parameters (serialized text).
     parameters: []const u8,
+    /// Optional context for dynamic tools (e.g. an MCP dispatch); null for
+    /// the static registry entries below.
+    ctx: ?*anyopaque = null,
     /// Execute the tool with the given JSON args; returns result text.
     /// Failures are converted to "ERROR: ..." text by the caller (the client
     /// `_safeCall` pattern), so the model can recover. `io` is provided for
-    /// providers that need it (e.g. the clock).
+    /// providers that need it (e.g. the clock). `ctx` is the tool's context
+    /// (null for static tools).
     execute: *const fn (
+        ctx: ?*anyopaque,
         allocator: std.mem.Allocator,
         io: std.Io,
         args_json: []const u8,
@@ -48,28 +53,38 @@ pub const registry = [_]Tool{
 
 /// Return the arguments JSON verbatim (deterministic — used in tests).
 fn echoArgs(
+    ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
     io: std.Io,
     args_json: []const u8,
 ) anyerror![]const u8 {
+    _ = ctx;
     _ = io;
     return allocator.dupe(u8, args_json);
 }
 
-/// Look up a tool by name, or null if unknown.
-pub fn lookup(name: []const u8) ?*const Tool {
-    for (&registry) |*tool| {
+/// Look up a tool by name in a merged tool surface (static registry + any
+/// dynamic entries), or null if unknown.
+pub fn lookupIn(surface: []const Tool, name: []const u8) ?*const Tool {
+    for (surface) |*tool| {
         if (std.mem.eql(u8, tool.name, name)) return tool;
     }
     return null;
 }
 
+/// Look up a tool by name in the static registry, or null if unknown.
+pub fn lookup(name: []const u8) ?*const Tool {
+    return lookupIn(&registry, name);
+}
+
 /// Return the current UTC time as an ISO 8601 string.
 fn getCurrentTime(
+    ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
     io: std.Io,
     args_json: []const u8,
 ) anyerror![]const u8 {
+    _ = ctx;
     _ = args_json;
     const ts = std.Io.Clock.now(.real, io);
     const epoch: u64 = @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s));
@@ -108,7 +123,7 @@ test "get_current_time returns a valid ISO 8601 UTC timestamp" {
     var threaded = std.Io.Threaded.init(a, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const out = try tool.execute(a, io, "{}");
+    const out = try tool.execute(null, a, io, "{}");
     // YYYY-MM-DDTHH:MM:SSZ
     try testing.expectEqual(@as(usize, 20), out.len);
     try testing.expect(out[4] == '-' and out[7] == '-' and out[10] == 'T' and out[19] == 'Z');

@@ -25,6 +25,22 @@ pub fn build(b: *std.Build) void {
     // target and optimize options) will be listed when running `zig build --help`
     // in this directory.
 
+    // MCP client module + the generic JSON-RPC framing it depends on. Declared
+    // here (before `mod`) because the acps module imports mcp_client for the
+    // MCP bridge. mcp_client stays its own module — consumable standalone,
+    // extractable later; the json_rpc module import is the extraction seam.
+    const json_rpc_mod = b.addModule("json_rpc", .{
+        .root_source_file = b.path("src/protocol/json_rpc.zig"),
+        .target = target,
+    });
+    const mcp_mod = b.addModule("mcp_client", .{
+        .root_source_file = b.path("src/mcp_client/mcp_client.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "json_rpc", .module = json_rpc_mod },
+        },
+    });
+
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
     // Zig modules are the preferred way of making Zig code available to consumers.
@@ -43,6 +59,10 @@ pub fn build(b: *std.Build) void {
         // Later on we'll use this module as the root module of a test executable
         // which requires us to specify a target.
         .target = target,
+        .imports = &.{
+            .{ .name = "json_rpc", .module = json_rpc_mod },
+            .{ .name = "mcp_client", .module = mcp_mod },
+        },
     });
 
     // Here we define an executable. An executable needs to have a root module
@@ -149,17 +169,10 @@ pub fn build(b: *std.Build) void {
     // MCP client: standalone module (consumable + extractable) with its own
     // test target. It depends on the generic JSON-RPC framing as an explicit
     // module import — the seam a future standalone package would reuse.
-    const json_rpc_mod = b.addModule("json_rpc", .{
-        .root_source_file = b.path("src/protocol/json_rpc.zig"),
-        .target = target,
-    });
-    const mcp_mod = b.addModule("mcp_client", .{
-        .root_source_file = b.path("src/mcp_client/mcp_client.zig"),
-        .target = target,
-        .imports = &.{
-            .{ .name = "json_rpc", .module = json_rpc_mod },
-        },
-    });
+    const json_rpc_tests = b.addTest(.{ .root_module = json_rpc_mod });
+    const run_json_rpc_tests = b.addRunArtifact(json_rpc_tests);
+    test_step.dependOn(&run_json_rpc_tests.step);
+
     const mcp_tests = b.addTest(.{ .root_module = mcp_mod });
     const run_mcp_tests = b.addRunArtifact(mcp_tests);
     test_step.dependOn(&run_mcp_tests.step);

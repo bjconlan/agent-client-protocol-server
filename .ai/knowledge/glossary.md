@@ -88,3 +88,6 @@ Project-specific terms and definitions. Add entries as concepts become load-bear
 - **`tools/list` / `tools/call`** — MCP tool discovery and invocation. Tool `inputSchema` is JSON Schema — maps directly onto ACP's `Tool.parameters` shape. `tools/call` returns content blocks (`text` supported in the first cut) plus `isError`.
 - **`resources/*` / `prompts/*`** — MCP's other surfaces (named resources read by URI; prompt templates resolved to messages). Client methods implemented; ACP-side wiring deferred to ACP v2 (whose schema includes MCP capabilities).
 - **mcp_client module** — `src/mcp_client/`, Zig module `mcp_client`; generic and protocol-agnostic, extractable to a separate package later. Depends on the `json_rpc` module (declared module import).
+
+- **mcp_bridge** — `src/mcp_bridge.zig` (acps module): connects configured MCP servers (`connectAll`, per-server failure warns + skips), builds the merged tool surface (`buildToolSurface`: static registry + MCP tools), and dispatches `tools/call` (`mcpExecute`). MCP tools appear to the ACP client as `"<server>:<tool>"`.
+- **Tool surface** — the merged tool list the model sees: static registry + dynamic entries. `Tool` carries an optional `ctx` (`?*anyopaque`) for dynamic dispatch (Zig has no closures); static tools pass null.

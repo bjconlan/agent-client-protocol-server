@@ -11,6 +11,8 @@ const std = @import("std");
 pub const client = @import("client.zig");
 pub const types = @import("types.zig");
 pub const transport = @import("transport.zig");
+/// Test-only scripted transport (mirrors `util/mock_http.zig`).
+pub const mock = @import("mock.zig");
 
 pub const Client = client.Client;
 pub const Transport = transport.Transport;

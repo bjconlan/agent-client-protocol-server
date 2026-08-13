@@ -10,8 +10,10 @@ pub const tools = struct {
 
 pub const server = @import("server.zig");
 
+pub const mcp_bridge = @import("mcp_bridge.zig");
+
 pub const protocol = struct {
-    pub const json_rpc = @import("protocol/json_rpc.zig");
+    pub const json_rpc = @import("json_rpc");
     pub const v1 = struct {
         pub const methods = @import("protocol/v1/methods.zig");
         pub const types = @import("protocol/v1/types.zig");

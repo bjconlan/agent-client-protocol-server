@@ -66,6 +66,16 @@ pub fn main(init: std.process.Init) !void {
     var stdin_buffer: [1024 * 1024]u8 = undefined;
     var stdin_file_reader: Io.File.Reader = .init(.stdin(), io, &stdin_buffer);
 
+    // Connect configured MCP servers (stdio). Failures warn + skip: the
+    // server still runs, those tools are just absent.
+    var mcp_connections: []acps.mcp_bridge.Connection = &.{};
+    if (config.mcp_servers.len > 0) {
+        mcp_connections = acps.mcp_bridge.connectAll(arena, io, &config, &env_map) catch |err| {
+            std.log.warn("mcp: connect failed: {s}", .{@errorName(err)});
+            &.{};
+        };
+    }
+
     try acps.server.run(
         io,
         &stdin_file_reader.interface,
@@ -76,5 +86,6 @@ pub fn main(init: std.process.Init) !void {
             .{ .generate = acps.provider.openai.generate },
             .{ .generate = acps.provider.anthropic.generate },
         },
+        mcp_connections,
     );
 }

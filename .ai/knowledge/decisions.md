@@ -197,3 +197,15 @@ Format:
 
 **Context:** Consistent with the `Parsed` arena pattern, the MCP client copies results into the caller's allocator; negotiated state (protocol version, server info, capabilities, last error) lives in the client's arena for its lifetime. Transports implement a `writeLine`/`readLine`/`deinit` vtable so protocol tests run against a scripted mock while `StdioTransport` spawns the real child process.
 **Outcome:** Accepted as designed. Flush-after-write is required (the stdio writer is buffered); `Child.kill` reaps (no `wait` after); `Io.Mutex` is extern (init via `Io.Mutex.init`, `lockUncancelable`).
+
+### 2025-08-11 — MCP tools merged into the ACP tool surface
+
+**Context:** Wire the MCP client into the ACP flow: the model should be able to call MCP-hosted tools with the existing permission/result flow.
+**Options considered:** separate MCP tool path bypassing permissions; global dispatch registry; per-tool context on `Tool`.
+**Outcome:** **Merged surface with per-tool ctx.** `tools.Tool` gained `ctx: ?*anyopaque` (default null — static entries unchanged) and `execute(ctx, …)`; `mcp_bridge` spawns/initializes configured servers (`connectAll`, per-server failures warn + skip), builds the merged tool surface (`buildToolSurface`: static + MCP tools named `"<server>:<tool>"` with `parameters` = MCP inputSchema JSON text, `ctx` → per-tool `Dispatch`), and `mcpExecute` routes `tools/call`. The existing `runToolCall` flow (report → `session/request_permission` → execute → result) is unchanged. `json_rpc.zig` became a shared module dependency (a file cannot live in two modules) — the acps module now imports it via the `json_rpc` module, and it has its own test target.
+
+### 2025-08-11 — MCP tool name namespacing
+
+**Context:** Multiple MCP servers may expose tools with the same name (e.g. two servers with `read_file`); the model's tool surface must be collision-free.
+**Options considered:** raw tool names; server-prefixed names.
+**Outcome:** **`"<server>:<tool>"`** — the ACP client sees `files:read_file`; `Dispatch` holds the original tool name for `tools/call`.

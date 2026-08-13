@@ -10,7 +10,7 @@
 const std = @import("std");
 const Io = std.Io;
 
-const json_rpc = @import("../json_rpc.zig");
+const json_rpc = @import("json_rpc");
 const types = @import("types.zig");
 const adapter = @import("../../provider/adapter.zig");
 const echo = @import("../../provider/echo.zig");
@@ -63,6 +63,9 @@ pub const Context = struct {
     cancel_requested: *std.atomic.Value(bool),
     http: *std.http.Client,
     config: config_mod.Config,
+    /// Merged tool surface (static registry + dynamic entries such as MCP
+    /// tools). Process-lifetime, built by the transport loop.
+    tools: []const tools_registry.Tool = &tools_registry.registry,
     /// Process-lifetime allocator (worker arenas must outlive per-message
     /// arena resets).
     process_allocator: std.mem.Allocator,
@@ -521,7 +524,7 @@ const PromptWorker = struct {
                 .api_key = api_key,
                 .config = config_kvs.items,
                 .http = self.ctx.http,
-                .tools = &tools_registry.registry,
+                .tools = self.ctx.tools,
                 .emit = emitChunk,
                 .is_cancelled = isCancelled,
                 .userdata = &emit_ud,
@@ -607,7 +610,7 @@ const PromptWorker = struct {
     /// Execute one tool call: report pending, request permission, run
     /// agent-side (ACP v1), report completion, return the result text.
     fn runToolCall(self: *PromptWorker, allocator: std.mem.Allocator, call: adapter.ToolCall) ![]const u8 {
-        const tool = tools_registry.lookup(call.name) orelse
+        const tool = tools_registry.lookupIn(self.ctx.tools, call.name) orelse
             return allocator.dupe(u8, "ERROR: unknown tool");
 
         self.reportToolCall(allocator, call, tool, "pending");
@@ -619,7 +622,7 @@ const PromptWorker = struct {
         }
 
         self.reportToolCall(allocator, call, tool, "in_progress");
-        const result = tool.execute(allocator, self.ctx.io, call.arguments) catch |err| blk: {
+        const result = tool.execute(tool.ctx, allocator, self.ctx.io, call.arguments) catch |err| blk: {
             const msg = std.fmt.allocPrint(allocator, "ERROR: {s}", .{@errorName(err)}) catch break :blk "ERROR";
             break :blk msg;
         };

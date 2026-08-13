@@ -23,7 +23,7 @@ end-to-end (including against DeepSeek, which serves both dialects).
 | Protocol | ACP **v1** (v2-ready via `protocolVersion` negotiation) |
 | Transport | stdio (stdin/stdout), JSON-RPC 2.0 per ACP spec |
 | Model providers | OpenAI Responses API + Anthropic Messages API (adapter per `api`) |
-| Tool calling | Agent-side execution; client grants via `session/request_permission` |
+| Tool calling | Agent-side execution; client grants via `session/request_permission`; MCP server tools via `mcpServers` config |
 | Formatting / conformance | `zig fmt` (enforced via pre-commit hook) |
 | Testing | `zig build test` (`std.testing`), mock HTTP server |
 | Logging | Zig `std.log`, scoped edge tracing via `ACP_LOG` |
@@ -207,8 +207,16 @@ servers acps can call tools on, over stdio:
 | `mcpServers.<name>.env` | Optional — extra environment variables for the child |
 
 Invalid server definitions (missing `command`, non-string args/env values)
-are startup errors naming the offending server. Wiring MCP tools into the
-ACP tool flow is in progress (Epic 3).
+are startup errors naming the offending server.
+
+At startup acps spawns each configured server (stdio), negotiates the MCP
+`initialize` handshake, and fetches its `tools/list`. The tools are merged
+into the model's tool surface under `"<server>:<tool>"` names (e.g.
+`files:read_file`) — the ACP client sees them as ordinary tools and grants
+permission through the existing `session/request_permission` flow; acps
+routes execution back to the owning MCP server via `tools/call`. A server
+that fails to spawn or initialize is skipped with a warning (the server
+still runs; those tools are just absent).
 
 ### Environment variables
 

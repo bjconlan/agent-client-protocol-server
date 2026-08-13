@@ -13,11 +13,12 @@
 const std = @import("std");
 const Io = std.Io;
 
-const json_rpc = @import("protocol/json_rpc.zig");
+const json_rpc = @import("json_rpc");
 const methods_v1 = @import("protocol/v1/methods.zig");
 const types_v1 = @import("protocol/v1/types.zig");
 const echo = @import("provider/echo.zig");
 const config_mod = @import("config.zig");
+const mcp_bridge = @import("mcp_bridge.zig");
 
 /// Protocol messages only on stdout; all logging goes to stderr (callers
 /// wire the file handles).
@@ -33,9 +34,13 @@ pub fn run(
     gpa: std.mem.Allocator,
     config: config_mod.Config,
     adapters: [2]?@import("provider/adapter.zig").Provider,
+    mcp_connections: []mcp_bridge.Connection,
 ) !void {
     var msg_arena = std.heap.ArenaAllocator.init(gpa);
     defer msg_arena.deinit();
+
+    // Merged tool surface: static registry + MCP tools (process lifetime).
+    const tool_surface = try mcp_bridge.buildToolSurface(gpa, mcp_connections);
 
     // Process-lifetime session store (outlives per-message arenas).
     var session_store = types_v1.SessionStore.init(gpa);
@@ -58,6 +63,7 @@ pub fn run(
         .worker_done = &worker_done,
         .http = &http_client,
         .config = config,
+        .tools = tool_surface,
         .process_allocator = gpa,
         .permission = &permission,
     };
@@ -248,7 +254,7 @@ fn expectRun(input: []const u8, expected: []const u8) !void {
     var fixed_reader = Io.Reader.fixed(input);
     var out: Io.Writer.Allocating = .init(a);
     const cfg = testConfig(a);
-    try run(io, &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = echo.generate }, null });
+    try run(io, &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = echo.generate }, null }, &.{});
     try testing.expectEqualStrings(expected, out.written());
 }
 
@@ -367,6 +373,54 @@ fn fakeToolGenerate(
     return .{ .stop_reason = "end_turn", .usage = null, .tool_calls = &.{}, .output_items = &.{} };
 }
 
+test "MCP tool round-trip: model calls an MCP tool through the full ACP flow" {
+    const mcp_client = @import("mcp_client");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    fake_call_name = "fs:read_file";
+    defer fake_call_name = "get_current_time";
+
+    // Scripted MCP server: initialize → tools/list → tools/call.
+    var mock = mcp_client.mock.MockTransport.init(a, &.{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fs\",\"version\":\"1\"}}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read_file\",\"description\":\"Read a file\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"file contents\"}]}}",
+    });
+    var client = mcp_client.Client.init(a, testing.io, mock.transport());
+    defer client.deinit();
+    try client.initialize(a, "2025-06-18", .{ .name = "acps", .version = "0.1.0" });
+
+    var conns: [1]mcp_bridge.Connection = .{.{ .name = "fs", .client = client }};
+
+    const input =
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+        \\{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
+        \\{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"1","prompt":[{"type":"text","text":"hello"}]}}
+        \\{"jsonrpc":"2.0","id":1001,"result":{"granted":true}}
+    ;
+    var fixed_reader = Io.Reader.fixed(input);
+    var out: Io.Writer.Allocating = .init(a);
+    const cfg = testConfig(a);
+
+    var threaded = Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = fakeToolGenerate }, null }, &conns);
+    const actual = out.written();
+
+    // MCP tool surfaces in the tool_call notification, permission flow runs,
+    // the MCP server's result is fed back, then the model answers.
+    try testing.expect(std.mem.indexOf(u8, actual, "\"sessionUpdate\":\"tool_call\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"method\":\"session/request_permission\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "file contents") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"status\":\"completed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"text\":\"it is now done\"") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "\"stopReason\":\"end_turn\"") != null);
+    // The ACP client saw the merged tool name, not the raw MCP name.
+    try testing.expect(std.mem.indexOf(u8, actual, "fs:read_file") != null);
+}
+
 test "tool-call round-trip: echo tool, permission granted, result fed back" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -387,7 +441,7 @@ test "tool-call round-trip: echo tool, permission granted, result fed back" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = fakeToolGenerate }, null });
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = fakeToolGenerate }, null }, &.{});
     const actual = out.written();
 
     // tool_call (pending) notification
@@ -452,7 +506,7 @@ test "session config: set_config_option updates model, prompt uses it" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = configRecordingGenerate }, null });
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = configRecordingGenerate }, null }, &.{});
     const actual = out.written();
 
     // set_config_option responses reflect the updated currentValue
@@ -509,7 +563,7 @@ test "worker dispatch: anthropic api provider uses the anthropic adapter slot" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ null, .{ .generate = fakeAnthropicGenerate } });
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ null, .{ .generate = fakeAnthropicGenerate } }, &.{});
     const actual = out.written();
 
     // tool call reported + permission + executed via the anthropic slot
@@ -559,7 +613,7 @@ test "EOF mid-prompt cancels the turn" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = slowGenerate }, null });
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = slowGenerate }, null }, &.{});
     const actual = out.written();
 
     // the first chunk streamed, then the EOF cancel answered cancelled
@@ -589,7 +643,7 @@ test "prompt after a consumed cancel is not spuriously cancelled" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = slowGenerate }, null });
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = slowGenerate }, null }, &.{});
     const actual = out.written();
 
     // prompt 3: cancelled synchronously

@@ -88,12 +88,24 @@ flowchart LR
   `resources/read`, `prompts/list`, `prompts/get`, `ping`. Results are copied
   into the caller's allocator; negotiated state lives in the client arena;
   `last_error` records the server's error object after a failed request.
+- **ACP integration** (`src/mcp_bridge.zig`): `connectAll` spawns + initializes
+  each configured server (argv = command+args; child env = parent clone +
+  overrides), per-server failures warn + skip; `buildToolSurface` merges MCP
+  tools into the model's tool surface as `"<server>:<tool>"` (parameters =
+  MCP inputSchema JSON text; `Tool.ctx` → per-tool `Dispatch`); `mcpExecute`
+  routes `tools/call` and joins text content blocks. The existing ACP tool
+  flow (report → `session/request_permission` → execute → result) is reused
+  unchanged — `runToolCall` looks up the merged surface.
+- **Module sharing**: a Zig source file cannot live in two modules —
+  `protocol/json_rpc.zig` is now a shared `json_rpc` module dependency
+  (imported by both `acps` and `mcp_client`), with its own test target.
 - **Gotchas hit**: `Io.Mutex` is an extern struct — init with `Io.Mutex.init`
   (not `.{}`); `lock(io)` is cancelable — use `lockUncancelable`;
   `Io.File.Writer` is buffered — flush after each line or the child never
   receives it; `std.process.Child.kill` blocks until termination and reaps
   (id → null) — do NOT call `wait` after `kill`;
-  `std.ArrayList(T)` uses `= .empty` + `append(allocator, …)` in 0.16.
+  `std.ArrayList(T)` uses `= .empty` + `append(allocator, …)` in 0.16;
+  unmanaged ArrayList `appendSlice`/`append` take the allocator first.
 
 - **Config** (`config.zig`): JSON provider registry (ACP_CONFIG /
   ~/.config/acps/config.json) or env fallback. Each provider:
