@@ -186,3 +186,14 @@ Format:
 - Renamed `parseLine` → `parse`.
 - `parse` now returns `Parsed { message, arena }`; `Parsed.deinit` releases everything at once. This is the only leak-free ownership model: std.json 0.16's dynamic parser has no recursive `Value.deinit`, and under `.alloc_always` it drops number-token strings (allocated, then discarded when converted to `.integer`/`.float`) that are unreachable and unfreeable piecemeal. Verified with a leak-checked test (testing allocator) covering nested objects, arrays, and numbers.
 - Removed the build.zig `preferred_optimize_mode = .ReleaseSmall`: `-Doptimize` is registered normally so library consumers can dictate the mode; the release workflow passes `--release=small` explicitly.
+
+### 2025-08-11 — MCP client as a standalone module (mcp_client)
+
+**Context:** acps needs to call external MCP servers' tools on behalf of the ACP client. Epic 3 (`.ai/backlog/3.md`) merged an MCP feature set; the first task is the client module.
+**Options considered:** ACP-coupled helper inside `src/tools/`; generic in-repo module; separate repository now.
+**Outcome:** **Generic in-repo module `src/mcp_client/`** exposed as its own Zig module (`b.addModule("mcp_client", …)`) — MCP is a standalone protocol (only JSON-RPC 2.0 framing is shared, via a declared `json_rpc` module import, not a relative path), so the module is consumable standalone and extractable to its own package later without a rewrite. stdio transport first (streamable-HTTP deferred); `tools/*`, `resources/*`, `prompts/*` methods; scripted `MockTransport` for transcript tests (mirrors `util/mock_http.zig`).
+
+### 2025-08-11 — MCP client API: arena ownership + transport vtable
+
+**Context:** Consistent with the `Parsed` arena pattern, the MCP client copies results into the caller's allocator; negotiated state (protocol version, server info, capabilities, last error) lives in the client's arena for its lifetime. Transports implement a `writeLine`/`readLine`/`deinit` vtable so protocol tests run against a scripted mock while `StdioTransport` spawns the real child process.
+**Outcome:** Accepted as designed. Flush-after-write is required (the stdio writer is buffered); `Child.kill` reaps (no `wait` after); `Io.Mutex` is extern (init via `Io.Mutex.init`, `lockUncancelable`).

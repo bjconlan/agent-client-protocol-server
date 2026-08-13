@@ -79,3 +79,12 @@ Project-specific terms and definitions. Add entries as concepts become load-bear
   `Io.Clock.now(.real, io)`, `Io.Threaded.init(a, .{}).io()`, `Io.Dir.cwd()`
   + `readFileAlloc(dir, io, ...)`, `std.testing.io`, `std.process.Environ`
   (createMap/get), `std.os.linux.*` for nanosleep/clock_gettime.
+
+## MCP
+
+- **MCP (Model Context Protocol)** — protocol (modelcontextprotocol.io) standardizing how applications expose tools/resources/prompts to LLM applications. JSON-RPC 2.0 based; client and server roles. acps implements the **client** role (`src/mcp_client/`) to call external tool servers.
+- **MCP stdio transport** — newline-delimited JSON-RPC 2.0 over a spawned child process's stdin/stdout (same framing as ACP's own transport).
+- **`initialize` handshake** — MCP's version negotiation: client sends `protocolVersion` (date-stamped, e.g. `2025-06-18`) + capabilities + clientInfo; server replies with its protocol version, capabilities, serverInfo; client then MUST send `notifications/initialized`.
+- **`tools/list` / `tools/call`** — MCP tool discovery and invocation. Tool `inputSchema` is JSON Schema — maps directly onto ACP's `Tool.parameters` shape. `tools/call` returns content blocks (`text` supported in the first cut) plus `isError`.
+- **`resources/*` / `prompts/*`** — MCP's other surfaces (named resources read by URI; prompt templates resolved to messages). Client methods implemented; ACP-side wiring deferred to ACP v2 (whose schema includes MCP capabilities).
+- **mcp_client module** — `src/mcp_client/`, Zig module `mcp_client`; generic and protocol-agnostic, extractable to a separate package later. Depends on the `json_rpc` module (declared module import).

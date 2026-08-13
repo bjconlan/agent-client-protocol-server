@@ -55,6 +55,46 @@ flowchart LR
     M <-- permission slot --> W   # session/request_permission response routing
 ```
 
+### MCP client module (feature/mcp-client-module, 2025-08-11)
+
+```mermaid
+flowchart LR
+    subgraph acps
+        subgraph mcp_client
+            CL[mcp_client.Client]
+            ST[StdioTransport]
+            MT[MockTransport - tests]
+        end
+        JR[json_rpc module - shared framing]
+    end
+    CL -- lines --> ST
+    ST -- pipes --> MCP[MCP server child process]
+    CL --> JR
+```
+
+- **`src/mcp_client/`** — generic MCP **client** (protocol-agnostic; MCP is
+  independent of ACP except for shared JSON-RPC 2.0 framing). Exposed as the
+  `mcp_client` Zig module (its own `b.addModule`), so it is consumable
+  standalone and extractable to a separate package later.
+- **Module dependency**: `mcp_client` imports the JSON-RPC framing via a
+  declared module import (`json_rpc` module) — not a relative path — the seam
+  a future standalone package would use.
+- **Transport vtable** (`writeLine`/`readLine`/`deinit`): `StdioTransport`
+  spawns the MCP server (`std.process.spawn`, piped stdin/stdout) and speaks
+  newline-delimited JSON-RPC; `MockTransport` (test-only, mirrors
+  `util/mock_http.zig`) scripts responses for transcript tests.
+- **Client methods**: `initialize` (negotiates protocol version, sends
+  `notifications/initialized`), `tools/list`, `tools/call`, `resources/list`,
+  `resources/read`, `prompts/list`, `prompts/get`, `ping`. Results are copied
+  into the caller's allocator; negotiated state lives in the client arena;
+  `last_error` records the server's error object after a failed request.
+- **Gotchas hit**: `Io.Mutex` is an extern struct — init with `Io.Mutex.init`
+  (not `.{}`); `lock(io)` is cancelable — use `lockUncancelable`;
+  `Io.File.Writer` is buffered — flush after each line or the child never
+  receives it; `std.process.Child.kill` blocks until termination and reaps
+  (id → null) — do NOT call `wait` after `kill`;
+  `std.ArrayList(T)` uses `= .empty` + `append(allocator, …)` in 0.16.
+
 - **Config** (`config.zig`): JSON provider registry (ACP_CONFIG /
   ~/.config/acps/config.json) or env fallback. Each provider:
   `{api, url, api_key|api_key_env, model}`. `model` is the fallback; the

@@ -146,6 +146,24 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    // MCP client: standalone module (consumable + extractable) with its own
+    // test target. It depends on the generic JSON-RPC framing as an explicit
+    // module import — the seam a future standalone package would reuse.
+    const json_rpc_mod = b.addModule("json_rpc", .{
+        .root_source_file = b.path("src/protocol/json_rpc.zig"),
+        .target = target,
+    });
+    const mcp_mod = b.addModule("mcp_client", .{
+        .root_source_file = b.path("src/mcp_client/mcp_client.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "json_rpc", .module = json_rpc_mod },
+        },
+    });
+    const mcp_tests = b.addTest(.{ .root_module = mcp_mod });
+    const run_mcp_tests = b.addRunArtifact(mcp_tests);
+    test_step.dependOn(&run_mcp_tests.step);
+
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
     // The Zig build system is entirely implemented in userland, which means
