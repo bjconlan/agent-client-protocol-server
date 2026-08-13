@@ -91,3 +91,8 @@ Project-specific terms and definitions. Add entries as concepts become load-bear
 
 - **mcp_bridge** — `src/mcp_bridge.zig` (acps module): connects configured MCP servers (`connectAll`, per-server failure warns + skips), builds the merged tool surface (`buildToolSurface`: static registry + MCP tools), and dispatches `tools/call` (`mcpExecute`). MCP tools appear to the ACP client as `"<server>:<tool>"`.
 - **Tool surface** — the merged tool list the model sees: static registry + dynamic entries. `Tool` carries an optional `ctx` (`?*anyopaque`) for dynamic dispatch (Zig has no closures); static tools pass null.
+
+- **ACP model selection** — v1 has no provider field on any method; the
+  client picks the model per session via `configOptions` (a config option
+  with category `"model"`) + `session/set_config_option`. Each executable
+  binds a single provider (env-configured).

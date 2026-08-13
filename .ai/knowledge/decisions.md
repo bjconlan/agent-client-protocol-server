@@ -209,3 +209,9 @@ Format:
 **Context:** Multiple MCP servers may expose tools with the same name (e.g. two servers with `read_file`); the model's tool surface must be collision-free.
 **Options considered:** raw tool names; server-prefixed names.
 **Outcome:** **`"<server>:<tool>"`** — the ACP client sees `files:read_file`; `Dispatch` holds the original tool name for `tools/call`.
+
+### 2025-08-11 — Config redesign considered: single-provider env config (REVIEWED, NOT IMPLEMENTED)
+
+**Context:** Re-read the ACP spec. v1 has no provider-selection surface — `session/new` params are `cwd` + `mcpServers` (both required) + `additionalDirectories`; model selection is per-session via `configOptions` (category `"model"`) + `session/set_config_option`. The pinned v2 alpha (`2.0.0-alpha.2`) has no provider/partner surface either — `providers/*` and `Partner` live in the UNSTABLE spec section. Conclusion: each executable should bind a single LLM provider; the multi-provider config file (Epic 2) is arguably beyond what ACP v1 needs.
+**Proposed (NOT implemented — user deferred):** replace the config file's `providers` section with three env vars — `ACPS_API` (`openai`|`anthropic`), `ACPS_API_URL`, `ACPS_API_KEY` — required at load with clear errors naming the missing one; also works when acps is embedded as a library. Config file keeps only `mcpServers`. Model required per session (no `provider.model` fallback); optional `effort` config option. Key validation: startup `/models` health check (openai) today; a per-session `/models` fetch for a real model dropdown was considered — note Anthropic has no models endpoint (asymmetric).
+**Deferred risk:** v2 UNSTABLE `providers/*` + `Partner` (multi-LLM per session) would need a multi-provider config source again when stabilized — the `ApiKind`/`ProviderConfig` abstraction and mcpServers-in-file keep that migration cheap.

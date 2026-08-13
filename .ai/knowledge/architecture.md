@@ -166,3 +166,16 @@ flowchart LR
 - Example provider config: `examples/config.example.json`.
 - Smoke: pipe JSON-RPC lines into `zig-out/bin/acps` with
   `ACP_CONFIG` + `ACP_LOG=debug` to trace the whole edge chain.
+
+## Future directions (reviewed 2025-08-11 — not implemented)
+
+- **Single-provider env config** — ACP v1 binds one provider per executable
+  (no provider surface in the pinned v1/v2-alpha schemas; `providers/*` +
+  `Partner` are UNSTABLE). Candidate: `ACPS_API` / `ACPS_API_URL` /
+  `ACPS_API_KEY` envs replace the config-file provider section (env also
+  works when embedded); model required per session + optional `effort`.
+- **Fork-per-channel** — for a daemon/TCP front-end: fork a child per ACP
+  client channel, provider selected via env at fork time (isolation + per-
+  client provider). Enabled by the env-config design (fork-friendly); stdio
+  ACP today already gives each client its own process. Captured in the
+  backlog as a candidate.
