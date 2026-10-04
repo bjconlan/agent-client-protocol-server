@@ -70,6 +70,6 @@ sequenceDiagram
 
 ## Status
 
-- **Stage:** Implementation — complete
+- **Stage:** Review — complete; merged to `main` (adc9b3d)
 - **Current unit:** U1–U4
-- **Next action:** verify + commit + merge
+- **Next action:** —

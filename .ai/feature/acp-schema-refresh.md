@@ -66,6 +66,6 @@ Notes:
 
 ## Status
 
-- **Stage:** Implementation
-- **Current unit:** U1–U5
-- **Next action:** verify + commit
+- **Stage:** Review — complete; squash-merged to `main` (d926a4f)
+- **Current unit:** —
+- **Next action:** —

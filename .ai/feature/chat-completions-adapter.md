@@ -67,6 +67,6 @@ sequenceDiagram
 
 ## Status
 
-- **Stage:** Implementation — complete
+- **Stage:** Review — complete; squash-merged to `main` (56d8e2a)
 - **Current unit:** U1–U4
-- **Next action:** verify + commit + merge
+- **Next action:** —
