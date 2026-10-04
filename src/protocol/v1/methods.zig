@@ -111,6 +111,10 @@ const v1_methods = [_]Method{
     .{ .name = "session/new", .handler = sessionNew },
     .{ .name = "session/set_config_option", .handler = sessionSetConfigOption },
     .{ .name = "session/prompt", .handler = sessionPrompt },
+    .{ .name = "session/list", .handler = sessionList },
+    .{ .name = "session/resume", .handler = sessionResume },
+    .{ .name = "session/delete", .handler = sessionDelete },
+    .{ .name = "session/close", .handler = sessionClose },
 };
 
 /// v1 notification table (no response).
@@ -160,7 +164,12 @@ fn initialize(
 
     var caps: std.json.ObjectMap = .empty;
     errdefer caps.deinit(allocator);
-    try caps.put(allocator, "sessionCapabilities", .{ .object = .empty });
+    var session_caps: std.json.ObjectMap = .empty;
+    try session_caps.put(allocator, "list", .{ .object = .empty });
+    try session_caps.put(allocator, "resume", .{ .object = .empty });
+    try session_caps.put(allocator, "delete", .{ .object = .empty });
+    try session_caps.put(allocator, "close", .{ .object = .empty });
+    try caps.put(allocator, "sessionCapabilities", .{ .object = session_caps });
     try caps.put(allocator, "promptCapabilities", .{ .object = .empty });
 
     var info: std.json.ObjectMap = .empty;
@@ -202,6 +211,7 @@ fn sessionNew(
         return error.InternalError;
     };
     const session = try ctx.sessions.create(cwd, provider.name);
+    ctx.sessions.touch(ctx.io, session);
 
     var result: std.json.ObjectMap = .empty;
     errdefer result.deinit(allocator);
@@ -287,12 +297,140 @@ fn sessionSetConfigOption(
     const key = try ctx.process_allocator.dupe(u8, config_id);
     const val = try ctx.process_allocator.dupe(u8, value_text);
     try session.config.put(key, val);
+    ctx.sessions.touch(ctx.io, session);
 
     var result: std.json.ObjectMap = .empty;
     errdefer result.deinit(allocator);
     const provider = ctx.config.resolve(session.provider_name) orelse return error.InternalError;
     try result.put(allocator, "configOptions", try configOptionsValue(allocator, session, provider));
     return .{ .object = result };
+}
+
+/// `session/list` — list persisted/active sessions, optionally filtered by
+/// `cwd`. Cursor pagination is not implemented (all sessions returned).
+fn sessionList(
+    ctx: *Context,
+    allocator: std.mem.Allocator,
+    id: json_rpc.RequestId,
+    params: std.json.Value,
+) anyerror!std.json.Value {
+    _ = id;
+    const p = switch (params) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    const cwd_filter: ?[]const u8 = switch (p.get("cwd") orelse std.json.Value{ .null = {} }) {
+        .string => |s| s,
+        else => null,
+    };
+
+    var sessions: std.json.Array = std.json.Array.init(allocator);
+    var it = ctx.sessions.map.iterator();
+    while (it.next()) |e| {
+        const s = e.value_ptr.*;
+        if (cwd_filter) |cf| {
+            if (!std.mem.eql(u8, s.cwd, cf)) continue;
+        }
+        var info: std.json.ObjectMap = .empty;
+        try info.put(allocator, "sessionId", .{ .string = s.id });
+        try info.put(allocator, "cwd", .{ .string = s.cwd });
+        if (s.updated_at > 0) {
+            try info.put(allocator, "updatedAt", .{ .string = try formatIso8601(allocator, s.updated_at) });
+        }
+        try sessions.append(.{ .object = info });
+    }
+
+    var result: std.json.ObjectMap = .empty;
+    try result.put(allocator, "sessions", .{ .array = sessions });
+    return .{ .object = result };
+}
+
+/// `session/resume` — reactivate a persisted session (already loaded into
+/// memory at startup) without replaying history.
+fn sessionResume(
+    ctx: *Context,
+    allocator: std.mem.Allocator,
+    id: json_rpc.RequestId,
+    params: std.json.Value,
+) anyerror!std.json.Value {
+    _ = id;
+    _ = allocator;
+    const p = switch (params) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    const session_id = switch (p.get("sessionId") orelse return error.InvalidParams) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    };
+    const cwd = switch (p.get("cwd") orelse return error.InvalidParams) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    };
+    const session = ctx.sessions.get(session_id) orelse return error.InvalidParams;
+    if (!std.mem.eql(u8, session.cwd, cwd)) return error.InvalidParams;
+    return .{ .object = .empty };
+}
+
+/// `session/delete` — remove a session from the list (memory + snapshot).
+fn sessionDelete(
+    ctx: *Context,
+    allocator: std.mem.Allocator,
+    id: json_rpc.RequestId,
+    params: std.json.Value,
+) anyerror!std.json.Value {
+    _ = id;
+    _ = allocator;
+    const p = switch (params) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    const session_id = switch (p.get("sessionId") orelse return error.InvalidParams) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    };
+    ctx.sessions.remove(ctx.io, session_id);
+    return .{ .object = .empty };
+}
+
+/// `session/close` — cancel any in-flight work for the session. The session
+/// stays listable/resumable (use `session/delete` to remove it).
+fn sessionClose(
+    ctx: *Context,
+    allocator: std.mem.Allocator,
+    id: json_rpc.RequestId,
+    params: std.json.Value,
+) anyerror!std.json.Value {
+    _ = id;
+    _ = allocator;
+    const p = switch (params) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    const session_id = switch (p.get("sessionId") orelse return error.InvalidParams) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    };
+    if (ctx.sessions.get(session_id) == null) return error.InvalidParams;
+    // The server runs one prompt at a time; cancel it only if one is active.
+    if (ctx.active_worker != null) ctx.cancel_requested.store(true, .monotonic);
+    return .{ .object = .empty };
+}
+
+/// Format epoch seconds as an ISO 8601 UTC timestamp.
+fn formatIso8601(allocator: std.mem.Allocator, epoch: i64) ![]const u8 {
+    const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(epoch, 0)) };
+    const ds = es.getDaySeconds();
+    const yd = es.getEpochDay().calculateYearDay();
+    const md = yd.calculateMonthDay();
+    return allocator.print("{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+        yd.year,
+        md.month.numeric(),
+        md.day_index + 1,
+        ds.getHoursIntoDay(),
+        ds.getMinutesIntoHour(),
+        ds.getSecondsIntoMinute(),
+    });
 }
 
 /// `session/prompt` — start a prompt turn.
@@ -743,6 +881,7 @@ const PromptWorker = struct {
         if (session.history.items.len > 40) {
             session.history.replaceRange(self.ctx.process_allocator, 0, session.history.items.len - 20, &.{}) catch {};
         }
+        self.ctx.sessions.touch(self.ctx.io, session);
     }
 
     /// Emit a `usage_update` notification (schema: used/size).

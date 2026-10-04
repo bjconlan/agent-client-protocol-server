@@ -74,6 +74,9 @@ pub const Config = struct {
     providers: []ProviderConfig,
     /// Optional MCP servers; empty when the `mcpServers` section is absent.
     mcp_servers: []McpServerConfig = &.{},
+    /// Directory for session snapshots (from `state_dir`, `$ACPS_STATE_DIR`,
+    /// or the XDG state home). Null disables persistence.
+    state_dir: ?[]const u8 = null,
 
     pub const default_model = "deepseek-v4-flash";
     pub const config_dir = "acps/config.json";
@@ -121,6 +124,25 @@ pub const Config = struct {
         return null;
     }
 };
+
+/// Default session-snapshot directory (`$XDG_STATE_HOME` or
+/// `$HOME/.local/state`), overridable by `state_dir` / `$ACPS_STATE_DIR`.
+fn resolveStateDir(
+    allocator: std.mem.Allocator,
+    map: *const std.process.Environ.Map,
+    root: std.json.ObjectMap,
+) ?[]const u8 {
+    if (root.get("state_dir")) |v| switch (v) {
+        .string => |s| return allocator.dupe(u8, s) catch null,
+        else => {},
+    };
+    if (map.get("ACPS_STATE_DIR")) |s| return allocator.dupe(u8, s) catch null;
+    if (map.get("XDG_STATE_HOME")) |xdg| {
+        return std.fs.path.join(allocator, &.{ xdg, "acps", "sessions" }) catch null;
+    }
+    const home = map.get("HOME") orelse return null;
+    return std.fs.path.join(allocator, &.{ home, ".local", "state", "acps", "sessions" }) catch null;
+}
 
 /// Default config file path (`$XDG_CONFIG_HOME` or `$HOME/.config`).
 fn defaultPath(map: *const std.process.Environ.Map, allocator: std.mem.Allocator) ?[]const u8 {
@@ -227,6 +249,7 @@ fn parseConfig(
         .default_provider = try allocator.dupe(u8, default_name),
         .providers = try providers.toOwnedSlice(allocator),
         .mcp_servers = try mcp_servers.toOwnedSlice(allocator),
+        .state_dir = resolveStateDir(allocator, map, root),
     };
 }
 
@@ -401,7 +424,7 @@ test "loadFileAt: parses and validates a provider config" {
     try map.put("DEEPSEEK_API_KEY", "sk-ds");
 
     const json =
-        \\{"default_provider":"deepseek","providers":{
+        \\{"default_provider":"deepseek","state_dir":"/tmp/acps-state","providers":{
         \\ "deepseek":{"api":"openai","url":"https://api.deepseek.com/v1","api_key_env":"DEEPSEEK_API_KEY","model":"deepseek-v4-flash"},
         \\ "anthropic":{"api":"anthropic","url":"https://api.anthropic.com/v1","api_key":"sk-inline"},
         \\ "openrouter":{"api":"chat_completions","url":"https://openrouter.ai/api/v1","api_key":"sk-or","model":"meta-llama/llama-3"}
@@ -413,6 +436,7 @@ test "loadFileAt: parses and validates a provider config" {
 
     const cfg = try loadFileAt(testing.io, a, &map, dir.dir, "config.json");
     try testing.expectEqualStrings("deepseek", cfg.default_provider);
+    try testing.expectEqualStrings("/tmp/acps-state", cfg.state_dir.?);
     try testing.expectEqual(@as(usize, 3), cfg.providers.len);
     const ds = cfg.resolve("deepseek").?;
     try testing.expectEqual(ApiKind.openai, ds.api);

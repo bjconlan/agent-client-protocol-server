@@ -19,6 +19,7 @@ Project-specific terms and definitions. Add entries as concepts become load-bear
 ## ACP Core Types (session-oriented — per schema v1/v2)
 
 - **Session** — the top-level container: a conversation history and state. `session/new` creates one; `session/prompt` sends prompts into it; `session/cancel` interrupts. No Thread/Turn types exist in the current schemas (earlier ACP drafts used them; the pinned v1/v2 schemas do not).
+- **Session persistence** — one JSON snapshot per session (`{sessionId, cwd, provider, config, history, updatedAt}`) under `state_dir` (default `$XDG_STATE_HOME/acps/sessions` or `~/.local/state/acps/sessions`, overridable by config `state_dir`/`$ACPS_STATE_DIR`), loaded at startup. Lifecycle methods: `session/list` (SessionInfo: id/cwd/updatedAt, optional cwd filter), `session/resume` (validates id + cwd), `session/delete` (memory + disk), `session/close` (cancels an active prompt; still listable/resumable). `session/load` (full history replay) is not implemented.
 - **Prompt** — the unit of exchange: `session/prompt` params carry a `prompt` array of content blocks (text, etc.).
 - **SessionUpdate** — the streaming update notification: `session/update` params carry `update.sessionUpdate` variants (`agent_message_chunk`, `agent_message_completed`, `plan_update`, `session_info_update`, `usage_update`, `config_update`, `current_mode_update`, …).
 - **PromptResponse** — the result of a prompt turn, incl. `stopReason` (e.g. `end_turn`, `max_tokens`, `cancelled`).

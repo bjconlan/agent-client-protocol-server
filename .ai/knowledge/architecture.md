@@ -30,7 +30,7 @@ Usable-for-basic-use ACP v1 server, OpenAI Responses API only, no config file, m
 Key principles:
 - **Protocol/transport separated from provider** — `protocol/` knows ACP and JSON-RPC; `provider/` knows HTTP APIs; `src/main.zig` wires them together.
 - **Stdlib-only** — `std.json`, `std.http.Client`, `std.io`; no third-party Zig deps until a real need appears.
-- **Stateless core + explicit state** — sessions stored in memory (prototype phase); persistence is a later decision.
+- **Stateless core + explicit state** — in-memory `SessionStore` (`StringHashMap(*Session)`) with best-effort file persistence: one JSON snapshot per session under `state_dir`, loaded at startup. Persistence failures are logged, never propagated.
 - **Version-aware protocol layer** — ACP v1 primary, v2-ready. `InitializeRequest.protocolVersion` (uint16) selects a versioned method registry at the handshake; JSON-RPC framing and the session/prompt core are shared across versions. Non-breaking additions ride on capabilities negotiation.
 - **Session-oriented model** — ACP v1/v2 schemas are session-based (`session/new` → `session/prompt` → `session/update` stream → `PromptResponse`); there are no Thread/Turn types.
 
@@ -48,7 +48,8 @@ persistence, Chat Completions adapter).
 ```mermaid
 flowchart LR
     C[ACP client] -- stdio JSON-RPC 2.0 --> M[main.zig loop]
-    M --> R[protocol/v1 registry: initialize, session/new, set_config_option, session/prompt, session/cancel]
+    M --> R[protocol/v1 registry: initialize, session/new, set_config_option, session/prompt, session/cancel, session/list|resume|delete|close]
+    R <--> S[(state_dir: JSON session snapshots)]
     R --> W[PromptWorker thread]
     W --> A["adapter per ApiKind: openai Responses | anthropic Messages"]
     A -- HTTPS --> P[provider API]

@@ -46,6 +46,19 @@ pub fn run(
     var session_store = types_v1.SessionStore.init(gpa);
     defer session_store.deinit();
 
+    // Session persistence: create/load the state dir when configured.
+    if (config.state_dir) |state_dir| {
+        Io.Dir.cwd().createDirPath(io, state_dir) catch |err| {
+            std.log.warn("session: cannot create state dir '{s}': {s}", .{ state_dir, @errorName(err) });
+        };
+        if (Io.Dir.cwd().openDir(io, state_dir, .{ .iterate = true })) |dir| {
+            session_store.setPersistDir(dir);
+        } else |err| {
+            std.log.warn("session: cannot open state dir '{s}': {s}", .{ state_dir, @errorName(err) });
+        }
+    }
+    session_store.loadAll(io);
+
     var writer_lock: std.atomic.Mutex = .unlocked;
     var cancel_requested = std.atomic.Value(bool).init(false);
     var worker_done = std.atomic.Value(bool).init(false);
@@ -325,7 +338,7 @@ test "line without trailing newline at EOF is processed" {
 
 test "initialize handshake: full response, verbatim id" {
     const input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1,\"clientCapabilities\":{},\"clientInfo\":{\"name\":\"fossil-agent\",\"version\":\"1.0\"}}}\n";
-    const expected = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"sessionCapabilities\":{},\"promptCapabilities\":{}},\"authMethods\":[],\"agentInfo\":{\"name\":\"acps\",\"version\":\"0.1.0\"}}}\n";
+    const expected = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"sessionCapabilities\":{\"list\":{},\"resume\":{},\"delete\":{},\"close\":{}},\"promptCapabilities\":{}},\"authMethods\":[],\"agentInfo\":{\"name\":\"acps\",\"version\":\"0.1.0\"}}}\n";
     try expectRun(input, expected);
 }
 
@@ -342,13 +355,43 @@ test "fossil client flow: initialize → session/new → session/prompt (streame
         \\{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"1","prompt":[{"type":"text","text":"hello"}]}}
     ;
     const expected =
-        \\{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{},"promptCapabilities":{}},"authMethods":[],"agentInfo":{"name":"acps","version":"0.1.0"}}}
+        \\{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"list":{},"resume":{},"delete":{},"close":{}},"promptCapabilities":{}},"authMethods":[],"agentInfo":{"name":"acps","version":"0.1.0"}}}
         \\{"jsonrpc":"2.0","id":2,"result":{"sessionId":"1","configOptions":[{"id":"model","name":"Model","category":"model","value":{"type":"select","currentValue":"test-model","options":["test-model"]}}]}}
         \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}}}
         \\{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}
     ;
     // Zig multiline literals omit the final newline; the loop emits one per line.
     try expectRun(input, expected ++ "\n");
+}
+
+test "session lifecycle: list, resume, delete" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var threaded = Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const input =
+        \\{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
+        \\{"jsonrpc":"2.0","id":2,"method":"session/list","params":{}}
+        \\{"jsonrpc":"2.0","id":3,"method":"session/resume","params":{"sessionId":"1","cwd":"/tmp"}}
+        \\{"jsonrpc":"2.0","id":4,"method":"session/delete","params":{"sessionId":"1"}}
+        \\{"jsonrpc":"2.0","id":5,"method":"session/list","params":{}}
+    ;
+    var fixed_reader = Io.Reader.fixed(input);
+    var out: Io.Writer.Allocating = .init(a);
+    const cfg = testConfig(a);
+    try run(io, &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = echo.generate }, null, null }, &.{});
+    const written = out.written();
+
+    // list after new contains the session; resume + delete answer {}.
+    try testing.expect(std.mem.indexOf(u8, written, "\"sessionId\":\"1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "\"id\":3,\"result\":{}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "\"id\":4,\"result\":{}") != null);
+    // The final list is empty after delete.
+    try testing.expect(std.mem.indexOf(u8, written, "\"id\":5,\"result\":{\"sessions\":[]}") != null);
 }
 
 /// Test provider: returns one tool call on the first generate, then text.

@@ -37,17 +37,19 @@ OpenAI-compatible providers that predate the Responses API.
 stdio: `initialize` (version negotiation), `session/new` (with a model
 config-option selector), `session/set_config_option` (per-session API knobs),
 `session/prompt` (streamed `session/update` notifications), `session/cancel`
-(preemptive), and agent-side tool execution with client-persisted
-permissions. Multi-provider config with three API dialects (DeepSeek Responses
-+ Anthropic Messages live-verified; Chat Completions mock-verified).
+(preemptive), session lifecycle (`session/list`, `session/resume`,
+`session/delete`, `session/close`) with file-based persistence, and agent-side
+tool execution with client-persisted permissions. Multi-provider config with
+three API dialects (DeepSeek Responses + Anthropic Messages live-verified;
+Chat Completions mock-verified).
 
 **Epic 3 (current, `.ai/backlog/3.md`):** MCP tool support — acps gains an MCP
 **client** (`src/mcp_client/`, stdio transport) that connects to external MCP
 servers and exposes their tools through the existing ACP tool flow (agent-side
 execution, client permission grants); the module is reusable standalone and
 extractable later. Plus the deferred items: per-session provider switching
-(waits on the stabilized ACP v2 `providers/*`), ACP v2 support (whose MCP
-capability surface consumes `mcp_client`), and session persistence.
+(waits on the stabilized ACP v2 `providers/*`) and ACP v2 support (whose MCP
+capability surface consumes `mcp_client`).
 
 ## Prerequisites
 
@@ -132,7 +134,7 @@ Exported by `src/root.zig` (`@import("acps")`):
 | Module | Contents |
 |--------|----------|
 | `acps.protocol.json_rpc` | Wire format: `parse` (→ `Parsed`, arena-owned `Message`), `Message` (request/notification/response/error_response), `RequestId`, `ErrorObject`, `ErrorCode`, `serializeRequest/Notification/Response/Error` |
-| `acps.protocol.v1` | ACP v1 `types` + `methods` (initialize, session/new, session/prompt, …) |
+| `acps.protocol.v1` | ACP v1 `types` + `methods` (initialize, session/new, session/prompt, session/list/resume/delete/close, …) |
 | `acps.protocol.v2` | ACP v2 method registry (v2-ready dispatch seam) |
 | `acps.server` | `run()` — the stdio transport loop |
 | `acps.config` | `Config`, `ApiKind` (`openai` \| `anthropic` \| `chat_completions`), `ProviderConfig` |
@@ -196,6 +198,7 @@ A JSON config file (from `$ACP_CONFIG` or
 | `providers.<name>.api_key` | Inline key, or |
 | `providers.<name>.api_key_env` | Name of an env var holding the key (resolved at load) |
 | `providers.<name>.model` | Fallback model (default `deepseek-v4-flash`); the session can override it |
+| `state_dir` | Directory for session snapshots (default `$XDG_STATE_HOME/acps/sessions` or `~/.local/state/acps/sessions`; also `$ACPS_STATE_DIR`) |
 
 See `examples/config.example.json` for a full example.
 
