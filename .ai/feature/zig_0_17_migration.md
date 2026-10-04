@@ -170,10 +170,10 @@ flowchart TD
 
 ## Status
 
-- **Stage:** 2 (Implementation) — complete; ready for Review
-- **Current unit:** U7 (done)
-- **Last checkpoint:** All units implemented and verified: `zig fmt --check .` clean, `zig build` OK, 75/75 tests, `initialize` runtime smoke, cross-compile (linux-gnu / macos-arm / windows-gnu), 0.16 negative check
-- **Next action:** commit, then Review stage
+- **Stage:** 3 (Review) — complete; squash-merged to `main` (2294747)
+- **Current unit:** —
+- **Last checkpoint:** merged; `zig fmt --check .` clean, `zig build` 3/3, 75/75 tests, `initialize` smoke, cross-compile (linux-gnu / macos-arm / windows-gnu), 0.16 negative check; pre-commit hook green
+- **Next action:** — (feature branch deleted)
 
 <!-- 2026-10-04T07:20: Outcomes captured after Implementation + final verification (Review stage) -->
 
