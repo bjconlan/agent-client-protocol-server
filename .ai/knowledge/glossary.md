@@ -69,7 +69,9 @@ Project-specific terms and definitions. Add entries as concepts become load-bear
 - **ApiKind** — adapter discriminator from config `api`: `openai` (Responses
   API: nested `function` tools, Bearer auth, `reasoning.effort`) | `anthropic`
   (Messages API: flat tools, `x-api-key` + `anthropic-version`, `max_tokens`
-  required, `tool_use`/`tool_result` blocks). Dispatched via
+  required, `tool_use`/`tool_result` blocks) | `chat_completions` (classic
+  Chat Completions: `{role, content}` messages, nested `function` tools,
+  `tool_calls` continuation, Bearer auth). Dispatched via
   `Context.adapters[@backingInt(ApiKind)]`.
 - **Session config KVs** — `session/set_config_option` stores arbitrary
   configId→value pairs; forwarded to the provider request (`model` required,

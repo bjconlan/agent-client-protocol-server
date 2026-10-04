@@ -57,7 +57,7 @@ pub const Context = struct {
     writer: *Io.Writer,
     writer_lock: *std.atomic.Mutex,
     /// Adapter per ApiKind (openai, anthropic); null → not implemented.
-    adapters: [2]?adapter.Provider,
+    adapters: [3]?adapter.Provider,
     /// Set by `session/cancel` (main loop); polled by the prompt worker
     /// between chunks (preemptive cancellation).
     cancel_requested: *std.atomic.Value(bool),
@@ -926,7 +926,7 @@ fn testContext(a: std.mem.Allocator, writer: *Io.Writer) !*Context {
         .sessions = store,
         .writer = writer,
         .writer_lock = mutex,
-        .adapters = .{ .{ .generate = echo.generate }, null },
+        .adapters = .{ .{ .generate = echo.generate }, null, null },
         .cancel_requested = cancel,
         .worker_done = worker_done,
         .http = http,

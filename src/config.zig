@@ -30,10 +30,12 @@ const Io = std.Io;
 pub const ApiKind = enum {
     openai,
     anthropic,
+    chat_completions,
 
     pub fn parse(text: []const u8) ?ApiKind {
         if (std.mem.eql(u8, text, "openai")) return .openai;
         if (std.mem.eql(u8, text, "anthropic")) return .anthropic;
+        if (std.mem.eql(u8, text, "chat_completions")) return .chat_completions;
         return null;
     }
 };
@@ -322,7 +324,7 @@ fn parseProvider(
         else => return error.InvalidConfig,
     };
     const api = ApiKind.parse(api_text) orelse {
-        std.log.warn("config: provider '{s}': unknown api '{s}' (openai|anthropic)", .{ name, api_text });
+        std.log.warn("config: provider '{s}': unknown api '{s}' (openai|anthropic|chat_completions)", .{ name, api_text });
         return error.InvalidConfig;
     };
 
@@ -401,7 +403,8 @@ test "loadFileAt: parses and validates a provider config" {
     const json =
         \\{"default_provider":"deepseek","providers":{
         \\ "deepseek":{"api":"openai","url":"https://api.deepseek.com/v1","api_key_env":"DEEPSEEK_API_KEY","model":"deepseek-v4-flash"},
-        \\ "anthropic":{"api":"anthropic","url":"https://api.anthropic.com/v1","api_key":"sk-inline"}
+        \\ "anthropic":{"api":"anthropic","url":"https://api.anthropic.com/v1","api_key":"sk-inline"},
+        \\ "openrouter":{"api":"chat_completions","url":"https://openrouter.ai/api/v1","api_key":"sk-or","model":"meta-llama/llama-3"}
         \\}}
     ;
     var dir = std.testing.tmpDir(.{});
@@ -410,7 +413,7 @@ test "loadFileAt: parses and validates a provider config" {
 
     const cfg = try loadFileAt(testing.io, a, &map, dir.dir, "config.json");
     try testing.expectEqualStrings("deepseek", cfg.default_provider);
-    try testing.expectEqual(@as(usize, 2), cfg.providers.len);
+    try testing.expectEqual(@as(usize, 3), cfg.providers.len);
     const ds = cfg.resolve("deepseek").?;
     try testing.expectEqual(ApiKind.openai, ds.api);
     try testing.expectEqualStrings("sk-ds", ds.api_key.?);
@@ -419,6 +422,9 @@ test "loadFileAt: parses and validates a provider config" {
     try testing.expectEqual(ApiKind.anthropic, an.api);
     try testing.expectEqualStrings("sk-inline", an.api_key.?);
     try testing.expectEqualStrings(Config.default_model, an.model); // model defaults
+    const chat = cfg.resolve("openrouter").?;
+    try testing.expectEqual(ApiKind.chat_completions, chat.api);
+    try testing.expectEqualStrings("meta-llama/llama-3", chat.model);
 }
 
 test "loadFileAt: default provider falls back to the first listed" {

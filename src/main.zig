@@ -85,6 +85,7 @@ pub fn main(init: std.process.Init) !void {
         .{
             .{ .generate = acps.provider.openai.generate },
             .{ .generate = acps.provider.anthropic.generate },
+            .{ .generate = acps.provider.chat_completions.generate },
         },
         mcp_connections,
     );

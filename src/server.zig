@@ -33,7 +33,7 @@ pub fn run(
     writer: *Io.Writer,
     gpa: std.mem.Allocator,
     config: config_mod.Config,
-    adapters: [2]?@import("provider/adapter.zig").Provider,
+    adapters: [3]?@import("provider/adapter.zig").Provider,
     mcp_connections: []mcp_bridge.Connection,
 ) !void {
     var msg_arena = std.heap.ArenaAllocator.init(gpa);
@@ -254,7 +254,7 @@ fn expectRun(input: []const u8, expected: []const u8) !void {
     var fixed_reader = Io.Reader.fixed(input);
     var out: Io.Writer.Allocating = .init(a);
     const cfg = testConfig(a);
-    try run(io, &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = echo.generate }, null }, &.{});
+    try run(io, &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = echo.generate }, null, null }, &.{});
     try testing.expectEqualStrings(expected, out.written());
 }
 
@@ -406,7 +406,7 @@ test "MCP tool round-trip: model calls an MCP tool through the full ACP flow" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = fakeToolGenerate }, null }, &conns);
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = fakeToolGenerate }, null, null }, &conns);
     const actual = out.written();
 
     // MCP tool surfaces in the tool_call notification, permission flow runs,
@@ -441,7 +441,7 @@ test "tool-call round-trip: echo tool, permission granted, result fed back" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = fakeToolGenerate }, null }, &.{});
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = fakeToolGenerate }, null, null }, &.{});
     const actual = out.written();
 
     // tool_call (pending) notification
@@ -506,7 +506,7 @@ test "session config: set_config_option updates model, prompt uses it" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = configRecordingGenerate }, null }, &.{});
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = configRecordingGenerate }, null, null }, &.{});
     const actual = out.written();
 
     // set_config_option responses reflect the updated currentValue
@@ -563,7 +563,7 @@ test "worker dispatch: anthropic api provider uses the anthropic adapter slot" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ null, .{ .generate = fakeAnthropicGenerate } }, &.{});
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ null, .{ .generate = fakeAnthropicGenerate }, null }, &.{});
     const actual = out.written();
 
     // tool call reported + permission + executed via the anthropic slot
@@ -613,7 +613,7 @@ test "EOF mid-prompt cancels the turn" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = slowGenerate }, null }, &.{});
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = slowGenerate }, null, null }, &.{});
     const actual = out.written();
 
     // the first chunk streamed, then the EOF cancel answered cancelled
@@ -643,7 +643,7 @@ test "prompt after a consumed cancel is not spuriously cancelled" {
 
     var threaded = Io.Threaded.init(a, .{});
     defer threaded.deinit();
-    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = slowGenerate }, null }, &.{});
+    try run(threaded.io(), &fixed_reader, &out.writer, a, cfg, .{ .{ .generate = slowGenerate }, null, null }, &.{});
     const actual = out.written();
 
     // prompt 3: cancelled synchronously

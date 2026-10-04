@@ -10,9 +10,11 @@ JSON-RPC 2.0, as defined by the Agent Client Protocol specification.
 
 The server brokers requests between an ACP-speaking client and a model provider
 API. Providers are declared in a config file and served through adapter
-implementations per API dialect — currently **OpenAI Responses** (`api:
+implementations per API dialect — **OpenAI Responses** (`api:
 "openai"`) and **Anthropic Messages** (`api: "anthropic"`), both verified live
-end-to-end (including against DeepSeek, which serves both dialects).
+end-to-end (including against DeepSeek, which serves both dialects), plus a
+classic **OpenAI Chat Completions** adapter (`api: "chat_completions"`) for
+OpenAI-compatible providers that predate the Responses API.
 
 ## Tech Stack
 
@@ -22,7 +24,7 @@ end-to-end (including against DeepSeek, which serves both dialects).
 | Build / dependency resolution | `build.zig` + `build.zig.zon` (`zig fetch`) |
 | Protocol | ACP **v1** (v2-ready via `protocolVersion` negotiation) |
 | Transport | stdio (stdin/stdout), JSON-RPC 2.0 per ACP spec |
-| Model providers | OpenAI Responses API + Anthropic Messages API (adapter per `api`) |
+| Model providers | OpenAI Responses API + Anthropic Messages API + OpenAI Chat Completions API (adapter per `api`) |
 | Tool calling | Agent-side execution; client grants via `session/request_permission`; MCP server tools via `mcpServers` config |
 | Formatting / conformance | `zig fmt` (enforced via pre-commit hook) |
 | Testing | `zig build test` (`std.testing`), mock HTTP server |
@@ -36,8 +38,8 @@ stdio: `initialize` (version negotiation), `session/new` (with a model
 config-option selector), `session/set_config_option` (per-session API knobs),
 `session/prompt` (streamed `session/update` notifications), `session/cancel`
 (preemptive), and agent-side tool execution with client-persisted
-permissions. Multi-provider config with two API dialects, both live-verified
-(DeepSeek via `/v1` Responses and `/anthropic` Messages).
+permissions. Multi-provider config with three API dialects (DeepSeek Responses
++ Anthropic Messages live-verified; Chat Completions mock-verified).
 
 **Epic 3 (current, `.ai/backlog/3.md`):** MCP tool support — acps gains an MCP
 **client** (`src/mcp_client/`, stdio transport) that connects to external MCP
@@ -45,8 +47,7 @@ servers and exposes their tools through the existing ACP tool flow (agent-side
 execution, client permission grants); the module is reusable standalone and
 extractable later. Plus the deferred items: per-session provider switching
 (waits on the stabilized ACP v2 `providers/*`), ACP v2 support (whose MCP
-capability surface consumes `mcp_client`), session persistence, and a Chat
-Completions adapter.
+capability surface consumes `mcp_client`), and session persistence.
 
 ## Prerequisites
 
@@ -134,8 +135,8 @@ Exported by `src/root.zig` (`@import("acps")`):
 | `acps.protocol.v1` | ACP v1 `types` + `methods` (initialize, session/new, session/prompt, …) |
 | `acps.protocol.v2` | ACP v2 method registry (v2-ready dispatch seam) |
 | `acps.server` | `run()` — the stdio transport loop |
-| `acps.config` | `Config`, `ApiKind` (`openai` \| `anthropic`), `ProviderConfig` |
-| `acps.provider` | Adapter interface + `openai`, `anthropic`, `echo` implementations |
+| `acps.config` | `Config`, `ApiKind` (`openai` \| `anthropic` \| `chat_completions`), `ProviderConfig` |
+| `acps.provider` | Adapter interface + `openai`, `anthropic`, `chat_completions`, `echo` implementations |
 | `acps.tools` | Server-side tool registry |
 | `acps.util` | `json` helpers, `http` client, `log`, `mock_http` (test-only) |
 
@@ -146,8 +147,9 @@ zig build test     # runs the test suite (std.testing)
 zig fmt --check .  # formatting conformance
 ```
 
-A pre-commit hook runs `zig fmt --check` + `zig build test` on every commit
-(versioned in `.githooks/`, wired via `git config core.hooksPath .githooks`).
+A pre-commit hook runs `zig fmt --check` + `zig build` + `zig build test` on
+every commit (versioned in `.githooks/`, wired via
+`git config core.hooksPath .githooks`).
 
 An end-to-end smoke test drives the real fossil ACP client against the binary
 (`tclsh tests/fossil-e2e.tcl`), and `tests/transport-smoke.sh` checks the
@@ -175,6 +177,12 @@ A JSON config file (from `$ACP_CONFIG` or
       "url": "https://api.deepseek.com/anthropic",
       "api_key_env": "DEEPSEEK_API_KEY",
       "model": "deepseek-v4-flash"
+    },
+    "openrouter": {
+      "api": "chat_completions",
+      "url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "model": "meta-llama/llama-3.1-8b-instruct"
     }
   }
 }
@@ -183,8 +191,8 @@ A JSON config file (from `$ACP_CONFIG` or
 | Field | Purpose |
 |-------|---------|
 | `default_provider` | Optional; the default is the **first listed** provider |
-| `providers.<name>.api` | Adapter dialect: `openai` (Responses API) or `anthropic` (Messages API) |
-| `providers.<name>.url` | Base URL; `/responses` or `/v1/messages` is appended per dialect |
+| `providers.<name>.api` | Adapter dialect: `openai` (Responses API), `anthropic` (Messages API), or `chat_completions` (classic Chat Completions) |
+| `providers.<name>.url` | Base URL; `/responses`, `/v1/messages`, or `/chat/completions` is appended per dialect |
 | `providers.<name>.api_key` | Inline key, or |
 | `providers.<name>.api_key_env` | Name of an env var holding the key (resolved at load) |
 | `providers.<name>.model` | Fallback model (default `deepseek-v4-flash`); the session can override it |

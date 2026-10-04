@@ -120,8 +120,9 @@ flowchart LR
 - **Permission** (`PendingPermission`): single slot, armed synchronously in
   `sessionPrompt` before spawn (integer ids — the fossil client mangles string
   ids). The main loop routes inbound responses by id.
-- **Adapters** (`provider/`): openai (Responses API, nested tools) and
-  anthropic (Messages API, flat tools, x-api-key). Dispatched by
+- **Adapters** (`provider/`): openai (Responses API, nested tools),
+  anthropic (Messages API, flat tools, x-api-key), and chat_completions
+  (classic `/chat/completions`, `{role,content}` messages). Dispatched by
   `Context.adapters[@backingInt(ApiKind)]`. `api: "anthropic"` skips the
   startup health check (no models endpoint).
 - **Logging** (`util/log.zig`): std.log scopes at the edges — `transport`
