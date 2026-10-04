@@ -104,7 +104,7 @@ flowchart LR
   `Io.File.Writer` is buffered — flush after each line or the child never
   receives it; `std.process.Child.kill` blocks until termination and reaps
   (id → null) — do NOT call `wait` after `kill`;
-  `std.ArrayList(T)` uses `= .empty` + `append(allocator, …)` in 0.16;
+  `std.ArrayList(T)` uses `= .empty` + `append(allocator, …)` in 0.16+;
   unmanaged ArrayList `appendSlice`/`append` take the allocator first.
 
 - **Config** (`config.zig`): JSON provider registry (ACP_CONFIG /
@@ -122,7 +122,7 @@ flowchart LR
   ids). The main loop routes inbound responses by id.
 - **Adapters** (`provider/`): openai (Responses API, nested tools) and
   anthropic (Messages API, flat tools, x-api-key). Dispatched by
-  `Context.adapters[@intFromEnum(ApiKind)]`. `api: "anthropic"` skips the
+  `Context.adapters[@backingInt(ApiKind)]`. `api: "anthropic"` skips the
   startup health check (no models endpoint).
 - **Logging** (`util/log.zig`): std.log scopes at the edges — `transport`
   (stdio in/out lines), `http` (one line per request/response:
@@ -130,7 +130,7 @@ flowchart LR
   Runtime level via `ACP_LOG` (err|warn|info|debug); binary only (tests use
   Zig defaults).
 
-### Zig 0.16 gotchas learned (all hit during development)
+### Zig 0.17 gotchas learned (all hit during development)
 
 - **Never return a struct by value that contains self-referential pointers.**
   `util/http.zig` `Response` must be heap-allocated: the body `reader` borrows
@@ -142,7 +142,7 @@ flowchart LR
 - **`error.DeferredResponse` fires errdefers** — returning it from
   `sessionPrompt` freed the worker arena while the worker ran (GP crash).
   Ownership must transfer explicitly.
-- **`std.json` union field access is non-optional** in 0.16 — use `switch`.
+- **`std.json` union field access is non-optional** in 0.16+ — use `switch`.
   Anonymous `.{ .object = obj }` literals are inferred as structs — annotate
   `std.json.Value{...}`.
 - **Multiline string literals omit the final newline**; `///` comments are
@@ -155,6 +155,15 @@ flowchart LR
   previous output items (reasoning_text) to continue after tools; model is
   required with no fallback (invalid → clear error); `reasoning.effort`
   optional (omit → model decides); `deepseek-v4-pro` unavailable (2026-08-11).
+- **Pointer stability for vtable contexts (0.17.0 migration).** A
+  `StdioTransport` created as a loop-local left every `Connection` holding a
+  dangling `Transport.ctx`; allocate it from the arena and store the pointer.
+  Likewise, `Tool.ctx` pointers must not point into a growable `ArrayList`
+  (`buildToolSurface` now `allocator.create`s each `Dispatch`). `zig build
+  test` would not catch either — tests never analyze `main`, so the
+  pre-commit hook now also runs `zig build`.
+- **`@backingInt` replaces `@intFromEnum`** in 0.17.0 (`zig fmt` rewrites it).
+  `@import("builtin").os` is deprecated in favor of `.target.os`.
 
 ### Live testing
 

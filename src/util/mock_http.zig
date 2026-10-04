@@ -124,7 +124,7 @@ test "mock: serves a canned response and records the request" {
     var http: std.http.Client = .{ .allocator = a, .io = io };
     defer http.deinit();
 
-    const url = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}/models", .{mock.port()});
+    const url = try a.print("http://127.0.0.1:{d}/models", .{mock.port()});
     defer a.free(url);
 
     var resp = try @import("../util/http.zig").request(&http, a, url, "sk-test", .{});

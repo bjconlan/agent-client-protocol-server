@@ -92,7 +92,7 @@ fn getCurrentTime(
     const ds = es.getDaySeconds();
     const yd = es.getEpochDay().calculateYearDay();
     const md = yd.calculateMonthDay();
-    return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+    return allocator.print("{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
         yd.year,
         md.month.numeric(),
         md.day_index + 1,

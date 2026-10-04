@@ -1,4 +1,4 @@
-# pre-commit: zig fmt --check + zig build test
+# pre-commit: zig fmt --check + zig build + zig build test
 
 set -e
 
@@ -14,6 +14,11 @@ fi
 
 echo "pre-commit: zig fmt --check"
 $ZIG fmt --check .
+
+# Compile the executable too: `zig build test` does not analyze `main`, so it
+# misses breakage in the main/connectAll path.
+echo "pre-commit: zig build"
+$ZIG build
 
 echo "pre-commit: zig build test"
 $ZIG build test

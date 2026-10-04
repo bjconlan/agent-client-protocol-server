@@ -18,7 +18,7 @@ end-to-end (including against DeepSeek, which serves both dialects).
 
 | Concern | Choice |
 |---------|--------|
-| Language | Zig (latest stable, managed via mise) |
+| Language | Zig 0.17.0 (pinned in `mise.toml`) |
 | Build / dependency resolution | `build.zig` + `build.zig.zon` (`zig fetch`) |
 | Protocol | ACP **v1** (v2-ready via `protocolVersion` negotiation) |
 | Transport | stdio (stdin/stdout), JSON-RPC 2.0 per ACP spec |
@@ -51,11 +51,17 @@ Completions adapter.
 ## Prerequisites
 
 - [mise](https://mise.jdx.dev) — used to manage the Zig toolchain
-- Zig (latest stable):
+- Zig 0.17.0 (pinned in `mise.toml`):
 
   ```sh
-  mise install          # reads mise.toml, installs zig
-  mise use zig@latest   # or update to latest
+  mise install          # reads mise.toml, installs the pinned zig
+  ```
+
+- Pre-commit hook (`zig fmt --check` + `zig build` + `zig build test`) —
+  enable once per clone:
+
+  ```sh
+  git config core.hooksPath .githooks
   ```
 
 ## Building

@@ -40,7 +40,7 @@ pub fn logFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    if (@intFromEnum(message_level) > @intFromEnum(runtime_level)) return;
+    if (@backingInt(message_level) > @backingInt(runtime_level)) return;
     const prefix = "[{s}] {s}: ";
     std.debug.print(prefix ++ format ++ "\n", .{
         @tagName(scope),

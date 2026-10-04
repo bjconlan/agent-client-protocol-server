@@ -59,7 +59,7 @@ pub const Message = union(enum) {
 /// A parsed message plus the arena owning all of its memory. This is what
 /// `parse` returns: `deinit` releases everything at once — strings, params/
 /// result JSON values, dropped number tokens, and the parse scaffolding.
-/// (0.16's dynamic `std.json.Value` has no recursive deinit and leaks number
+/// (std.json's dynamic `Value` has no recursive deinit and leaks number
 /// tokens under `.alloc_always`, so an arena is the leak-free way to own a
 /// parsed message.)
 pub const Parsed = struct {

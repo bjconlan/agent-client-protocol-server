@@ -23,7 +23,7 @@ pub const std_options = std.Options{
 /// returns EPIPE from the write instead of killing the process; the write
 /// paths catch those errors and end the turn quietly.
 fn ignoreSigpipe() void {
-    if (comptime builtin.os.tag != .windows) {
+    if (comptime builtin.target.os.tag != .windows) {
         var act = std.posix.Sigaction{
             .handler = .{ .handler = std.posix.SIG.IGN },
             .mask = std.posix.sigemptyset(),
@@ -70,9 +70,9 @@ pub fn main(init: std.process.Init) !void {
     // server still runs, those tools are just absent.
     var mcp_connections: []acps.mcp_bridge.Connection = &.{};
     if (config.mcp_servers.len > 0) {
-        mcp_connections = acps.mcp_bridge.connectAll(arena, io, &config, &env_map) catch |err| {
+        mcp_connections = acps.mcp_bridge.connectAll(arena, io, &config, &env_map) catch |err| blk: {
             std.log.warn("mcp: connect failed: {s}", .{@errorName(err)});
-            &.{};
+            break :blk &.{};
         };
     }
 

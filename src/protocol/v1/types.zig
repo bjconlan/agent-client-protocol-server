@@ -56,7 +56,7 @@ pub const SessionStore = struct {
     /// Keys/values are allocated from the store's own allocator so they
     /// survive per-message arena resets.
     pub fn create(self: *SessionStore, cwd: []const u8, provider_name: []const u8) !*Session {
-        const id = try std.fmt.allocPrint(self.allocator, "{d}", .{self.next_id});
+        const id = try self.allocator.print("{d}", .{self.next_id});
         self.next_id += 1;
         const session = try self.allocator.create(Session);
         session.* = .{

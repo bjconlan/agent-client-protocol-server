@@ -623,7 +623,7 @@ const PromptWorker = struct {
 
         self.reportToolCall(allocator, call, tool, "in_progress");
         const result = tool.execute(tool.ctx, allocator, self.ctx.io, call.arguments) catch |err| blk: {
-            const msg = std.fmt.allocPrint(allocator, "ERROR: {s}", .{@errorName(err)}) catch break :blk "ERROR";
+            const msg = allocator.print("ERROR: {s}", .{@errorName(err)}) catch break :blk "ERROR";
             break :blk msg;
         };
         self.reportToolResult(allocator, call, result);
@@ -822,7 +822,7 @@ fn isCancelled(userdata: ?*anyopaque) bool {
 
 /// The adapter for an ApiKind, or null.
 pub fn ctx_adapters(ctx: *const Context, api: config_mod.ApiKind) ?adapter.Provider {
-    return ctx.adapters[@intFromEnum(api)];
+    return ctx.adapters[@backingInt(api)];
 }
 
 /// Busy-wait on a short critical section (the writer). `yield()` can fail on

@@ -84,7 +84,7 @@ pub fn request(
             // NOTE: not freed here — the std client reads the header value
             // lazily (head flush can happen after this returns); callers pass
             // arenas, which reclaim it.
-            bearer_text = std.fmt.allocPrint(allocator, "Bearer {s}", .{api_key}) catch return error.Network;
+            bearer_text = allocator.print("Bearer {s}", .{api_key}) catch return error.Network;
         },
         .x_api_key => {
             headers_buf[header_count] = .{ .name = "x-api-key", .value = api_key };
@@ -104,7 +104,7 @@ pub fn request(
     std.log.scoped(.http).debug("{s} {s}{s}", .{
         url_text,
         method,
-        if (body) |b| std.fmt.allocPrint(allocator, " body={s}", .{b}) catch "" else "",
+        if (body) |b| allocator.print(" body={s}", .{b}) catch "" else "",
     });
 
     // Build the request directly into self.req so the response body reader
@@ -161,7 +161,7 @@ pub fn readAll(response: *Response, allocator: std.mem.Allocator) ![]u8 {
     const body = try response.reader.allocRemaining(allocator, .unlimited);
     std.log.scoped(.http).debug("{s} {d} body={s}", .{
         response.url,
-        @intFromEnum(response.status),
+        @backingInt(response.status),
         body,
     });
     return body;
@@ -174,7 +174,7 @@ pub fn url(
     path: []const u8,
 ) ![]u8 {
     const trimmed = std.mem.trimEnd(u8, base_url, "/");
-    return std.fmt.allocPrint(allocator, "{s}{s}", .{ trimmed, path });
+    return allocator.print("{s}{s}", .{ trimmed, path });
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ test "bearer auth sends a single Authorization header" {
     var mock = try @import("mock_http.zig").Mock.start(io, a, "HTTP/1.1 200 OK", "ok");
     defer mock.deinit();
 
-    const url_text = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}/models", .{mock.port()});
+    const url_text = try a.print("http://127.0.0.1:{d}/models", .{mock.port()});
     defer a.free(url_text);
 
     var resp = try request(&http, a, url_text, "sk-test", .{});

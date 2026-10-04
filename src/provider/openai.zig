@@ -478,7 +478,7 @@ test "generate: full round-trip against a mock /responses endpoint" {
     var mock = try @import("../util/mock_http.zig").Mock.start(io, a, "HTTP/1.1 200 OK", sse);
     defer mock.deinit();
 
-    const base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{mock.port()});
+    const base = try a.print("http://127.0.0.1:{d}", .{mock.port()});
     defer a.free(base);
 
     const chunks = try a.create(std.ArrayList([]const u8));

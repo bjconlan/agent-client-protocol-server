@@ -24,3 +24,11 @@ External references — maps URLs to local files in `references/`.
 
 - **Local:** references/acp-openai-research.md
   **Notes:** Key findings, ACP↔OpenAI mapping table, open questions.
+
+## Zig Toolchain
+
+- **Source:** https://ziglang.org/download/0.17.0/release-notes.html
+  **Local:** references/zig-0.17-release-notes.md
+  **Notes:** Migration-relevant extract of the Zig 0.17.0 release notes (build system, language, stdlib). Basis of `feature/zig_0_17_migration`. Read 2026-10-04.
+- **Source:** https://ziglang.org/download/0.16.0/release-notes.html
+  **Local:** — (superseded by 0.17.0; historical mutations referenced in old plans)

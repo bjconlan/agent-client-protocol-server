@@ -215,3 +215,21 @@ Format:
 **Context:** Re-read the ACP spec. v1 has no provider-selection surface — `session/new` params are `cwd` + `mcpServers` (both required) + `additionalDirectories`; model selection is per-session via `configOptions` (category `"model"`) + `session/set_config_option`. The pinned v2 alpha (`2.0.0-alpha.2`) has no provider/partner surface either — `providers/*` and `Partner` live in the UNSTABLE spec section. Conclusion: each executable should bind a single LLM provider; the multi-provider config file (Epic 2) is arguably beyond what ACP v1 needs.
 **Proposed (NOT implemented — user deferred):** replace the config file's `providers` section with three env vars — `ACPS_API` (`openai`|`anthropic`), `ACPS_API_URL`, `ACPS_API_KEY` — required at load with clear errors naming the missing one; also works when acps is embedded as a library. Config file keeps only `mcpServers`. Model required per session (no `provider.model` fallback); optional `effort` config option. Key validation: startup `/models` health check (openai) today; a per-session `/models` fetch for a real model dropdown was considered — note Anthropic has no models endpoint (asymmetric).
 **Deferred risk:** v2 UNSTABLE `providers/*` + `Partner` (multi-LLM per session) would need a multi-provider config source again when stabilized — the `ApiKind`/`ProviderConfig` abstraction and mcpServers-in-file keep that migration cheap.
+
+### 2026-10-04 — Zig toolchain upgraded to 0.17.0 (pinned)
+
+**Context:** Zig 0.17.0 is the current stable; the project was on 0.16.0. The release notes showed a small but compile-breaking surface: `b.args` was removed from the build system, and `@intFromEnum` is deprecated in favor of `@backingInt` (both hit by `zig fmt`/`zig build`).
+**Options considered:** stay on 0.16.0; upgrade to 0.17.0 pinned; track `latest`.
+**Outcome:** **Upgrade to 0.17.0, pinned.** `mise.toml` sets `zig = "0.17.0"` and `build.zig.zon` sets `minimum_zig_version = "0.17.0"`. CI uses `jdx/mise-action`, which reads `mise.toml`, so a floating `"latest"` would make CI nondeterministic; pinning matches the project convention. `zig fmt` auto-upgrades `@intFromEnum` → `@backingInt`; the Run step now calls `addPassthruArgs()`.
+
+### 2026-10-04 — No deprecated stdlib APIs before Zig 1.0 (standing principle)
+
+**Context:** 0.17.0 deprecates several APIs that still compile (`std.fmt.allocPrint`, `@import("builtin").{os,cpu,abi,object_format}`), with removal planned for 0.18.
+**Options considered:** leave deprecated calls that still compile; migrate every deprecation immediately.
+**Outcome:** **No deprecated APIs until Zig 1.0.** Migrated `std.fmt.allocPrint(a, …)` → `a.print(…)` (11 sites) and `@import("builtin").os` → `.target.os` (2 sites). Avoids a forced 0.18 migration and keeps the tree free of deprecated-API debt. Applies to future Zig upgrades too.
+
+### 2026-10-04 — Executable build was broken pre-0.17; fix root causes + harden the hook
+
+**Context:** While migrating, `zig build` (the executable) failed on a clean 0.16.0 worktree of `HEAD`: `mcp_bridge.connectAll` called a `*T` method on a `const` loop-local `StdioTransport`, and `main.zig`'s catch block yielded `void`. Neither is a 0.17 regression. Tests never analyze `main`; the versioned `.githooks/pre-commit` was not installed (`core.hooksPath` unset; `.git/hooks/` held only samples).
+**Options considered:** patch only the const error; fix the underlying pointer lifetime; also close the hook gap.
+**Outcome:** **Fix the root causes.** Arena-allocate `StdioTransport` (`allocator.create`) so `Transport.ctx` survives the loop and the returned connection list; make `main`'s catch yield `break :blk &.{}`; add `zig build` to `.githooks/pre-commit` (tests do not analyze `main`); document `git config core.hooksPath .githooks`. The same review found a related latent bug — `buildToolSurface` stored `&dispatches.items[i]` in `Tool.ctx`, which an `ArrayList` realloc can invalidate — fixed by `allocator.create`-ing each `Dispatch`, with a two-server routing regression test (74 → 75 tests).

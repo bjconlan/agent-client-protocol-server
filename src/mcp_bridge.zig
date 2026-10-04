@@ -50,11 +50,19 @@ pub fn connectAll(
         errdefer child_env.deinit();
         for (server.env) |kv| try child_env.put(kv.key, kv.value);
 
-        const transport = mcp_client.transport.StdioTransport.spawn(io, argv_slice, &child_env) catch |err| {
+        // The StdioTransport must outlive this loop iteration: `Client` stores
+        // a `Transport` whose `ctx` points back at it, and the client is
+        // appended to the returned (arena-owned) list. Allocating it from the
+        // arena gives it stable storage for the connection's lifetime.
+        const transport_ptr = allocator.create(mcp_client.transport.StdioTransport) catch {
+            std.log.warn("mcp: server '{s}': alloc failed", .{server.name});
+            continue;
+        };
+        transport_ptr.* = mcp_client.transport.StdioTransport.spawn(io, argv_slice, &child_env) catch |err| {
             std.log.warn("mcp: server '{s}': spawn failed: {s}", .{ server.name, @errorName(err) });
             continue;
         };
-        var client = mcp_client.Client.init(allocator, io, transport.transport());
+        var client = mcp_client.Client.init(allocator, io, transport_ptr.transport());
         client.initialize(allocator, protocol_version, .{ .name = "acps", .version = "0.1.0" }) catch |err| {
             std.log.warn("mcp: server '{s}': initialize failed: {s}", .{ server.name, @errorName(err) });
             client.deinit();
@@ -78,25 +86,27 @@ pub fn buildToolSurface(
     var list: std.ArrayList(tools_registry.Tool) = .empty;
     try list.appendSlice(allocator, &tools_registry.registry);
 
-    // Per-tool dispatch contexts, arena-owned, indexed by list order.
-    var dispatches: std.ArrayList(Dispatch) = .empty;
     for (connections) |*conn| {
         const tools = conn.client.listTools(allocator) catch |err| {
             std.log.warn("mcp: server '{s}': tools/list failed: {s}", .{ conn.name, @errorName(err) });
             continue;
         };
         for (tools) |tool| {
-            const full_name = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ conn.name, tool.name });
-            try dispatches.append(allocator, .{
+            const full_name = try allocator.print("{s}:{s}", .{ conn.name, tool.name });
+            // Each Dispatch is allocated individually: `Tool.ctx` points at it,
+            // so it must not move as the surface grows (an ArrayList of
+            // Dispatch would invalidate earlier ctx pointers on realloc).
+            const dispatch = try allocator.create(Dispatch);
+            dispatch.* = .{
                 .conn = conn,
                 .tool_name = try allocator.dupe(u8, tool.name),
-            });
+            };
             try list.append(allocator, .{
                 .name = full_name,
                 .description = tool.description,
                 .kind = "execute",
                 .parameters = tool.input_schema,
-                .ctx = @ptrCast(&dispatches.items[dispatches.items.len - 1]),
+                .ctx = @ptrCast(dispatch),
                 .execute = mcpExecute,
             });
         }
@@ -176,4 +186,44 @@ test "buildToolSurface merges static + MCP tools and dispatches" {
     try mock.appendResponse(a, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"file contents\"}]}}");
     const result = try mcp_tool.execute(mcp_tool.ctx, a, testing.io, "{\"path\":\"/tmp/x\"}");
     try testing.expectEqualStrings("file contents", result);
+}
+
+test "buildToolSurface routes each server's tools to its own connection" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const init_resp = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"m\",\"version\":\"1\"}}}";
+
+    var mock_a = MockTransport.init(a, &.{
+        init_resp,
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\",\"description\":\"A read\",\"inputSchema\":{\"type\":\"object\"}}]}}",
+    });
+    var client_a = mcp_client.Client.init(a, testing.io, mock_a.transport());
+    try client_a.initialize(a, protocol_version, .{ .name = "acps", .version = "0.1.0" });
+
+    var mock_b = MockTransport.init(a, &.{
+        init_resp,
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"write\",\"description\":\"B write\",\"inputSchema\":{\"type\":\"object\"}}]}}",
+    });
+    var client_b = mcp_client.Client.init(a, testing.io, mock_b.transport());
+    try client_b.initialize(a, protocol_version, .{ .name = "acps", .version = "0.1.0" });
+
+    var conns: [2]Connection = .{
+        .{ .name = "a", .client = client_a },
+        .{ .name = "b", .client = client_b },
+    };
+    const surface = try buildToolSurface(a, &conns);
+
+    const ta = tools_registry.lookupIn(surface, "a:read").?;
+    const tb = tools_registry.lookupIn(surface, "b:write").?;
+    try testing.expect(ta.ctx != null and tb.ctx != null);
+    try testing.expect(ta.ctx.? != tb.ctx.?);
+
+    // Each dispatch must reach its own server: script distinct tools/call replies.
+    try mock_a.appendResponse(a, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"from-a\"}]}}");
+    try mock_b.appendResponse(a, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"from-b\"}]}}");
+
+    try testing.expectEqualStrings("from-a", try ta.execute(ta.ctx, a, testing.io, "{}"));
+    try testing.expectEqualStrings("from-b", try tb.execute(tb.ctx, a, testing.io, "{}"));
 }

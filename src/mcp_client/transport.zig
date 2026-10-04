@@ -113,7 +113,7 @@ pub const StdioTransport = struct {
 };
 
 test "stdio transport: line framing round-trip over real pipes" {
-    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
+    if (comptime @import("builtin").target.os.tag == .windows) return error.SkipZigTest;
 
     // `cat` echoes stdin to stdout — enough to verify pipe plumbing and
     // line framing without a real MCP server.

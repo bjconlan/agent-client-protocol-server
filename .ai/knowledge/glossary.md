@@ -37,13 +37,15 @@ Project-specific terms and definitions. Add entries as concepts become load-bear
 
 - **OpenAI-compatible endpoint** — any provider exposing OpenAI-shaped APIs (e.g. DeepSeek at `https://api.deepseek.com`, `/v1` alias). Configured via `OPENAI_URL`; DeepSeek also documents a Responses API.
 
-## Zig 0.16 stdlib idioms (learned during F1)
+## Zig 0.17 stdlib idioms (learned during F1; upgraded 0.17)
 
 - `std.json.Value.jsonParse(allocator, &scanner, .{ .allocate = .alloc_always, .max_value_len = line.len })` with `std.json.Scanner.initCompleteInput(allocator, slice)` parses a dynamic value; pass `.max_value_len` explicitly (jsonParse unwraps it)
-- **Union field access is non-optional** in 0.16 — `value.object orelse ...` is a compile error; use `switch (value) { .object => |o| o, else => ... }`
+- **Union field access is non-optional** — `value.object orelse ...` is a compile error; use `switch (value) { .object => |o| o, else => ... }`
 - `std.json.Stringify.value(x, .{}, writer)` where `x` must be an explicit `std.json.Value{...}` — an anonymous `.{ .object = obj }` literal is inferred as a struct and fails to stringify (iterates the map's internals, hits `[*]u8`)
 - `std.Io.Reader.takeDelimiter('\n')` returns `!?[]u8` (null on EOF; slice is borrowed from the reader's buffer, valid until the next read); `error.StreamTooLong` when the line exceeds the reader buffer; `discardDelimiterInclusive` consumes the oversized line
 - `std.json.ObjectMap` / `std.json.Array` are managed — `obj.put(allocator, key, value)`, `obj.get(key)` (allocator-free), `obj.deinit(allocator)`
+- **0.17.0 language migration** — `@intFromEnum`/`@enumFromInt` are deprecated in favor of `@backingInt`/`@fromBackingInt` (`zig fmt` auto-upgrades the former); `std.fmt.allocPrint(a, …)` is deprecated in favor of `a.print(…)`; `@import("builtin").{os,cpu,abi,object_format}` are deprecated in favor of `@import("builtin").target.*`
+- **0.17.0 build system** — `b.args` is gone; Run steps call `run_cmd.addPassthruArgs()` (passthru args are no longer observable at configure time)
 
 ## Tooling
 
@@ -68,14 +70,14 @@ Project-specific terms and definitions. Add entries as concepts become load-bear
   API: nested `function` tools, Bearer auth, `reasoning.effort`) | `anthropic`
   (Messages API: flat tools, `x-api-key` + `anthropic-version`, `max_tokens`
   required, `tool_use`/`tool_result` blocks). Dispatched via
-  `Context.adapters[@intFromEnum(ApiKind)]`.
+  `Context.adapters[@backingInt(ApiKind)]`.
 - **Session config KVs** — `session/set_config_option` stores arbitrary
   configId→value pairs; forwarded to the provider request (`model` required,
   known knobs applied, unknowns skipped with a log).
 - **ACP_LOG scopes** — `transport` (stdio in/out), `http` (one line per
   request `{url} {method} body=…` / response `{url} {status} body=…`),
   `provider` (SSE lines). Runtime level via the env var; binary only.
-- **Zig 0.16 replacements** — `Io.Mutex` (spinlock via `tryLock`+yield),
+- **Zig 0.16+ stdlib replacements** — `Io.Mutex` (spinlock via `tryLock`+yield),
   `Io.Clock.now(.real, io)`, `Io.Threaded.init(a, .{}).io()`, `Io.Dir.cwd()`
   + `readFileAlloc(dir, io, ...)`, `std.testing.io`, `std.process.Environ`
   (createMap/get), `std.os.linux.*` for nanosleep/clock_gettime.

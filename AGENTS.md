@@ -109,9 +109,13 @@ Workflows are triggered automatically based on branch type. See [Branch Workflow
 The pre-commit git hook runs, in order:
 
 1. `zig fmt --check` — formatting conformance; fails the commit if any Zig file is not formatted
-2. `zig build test` — compiles the project and runs the full test suite
+2. `zig build` — compiles the executable; catches breakage in `main`/`connectAll`, which `zig build test` never analyzes
+3. `zig build test` — compiles the project and runs the full test suite
 
-If either step fails, the commit is blocked. Use `--no-verify` only with explicit user approval and justification.
+If any step fails, the commit is blocked. Use `--no-verify` only with explicit user approval and justification.
+
+The hook is versioned at `.githooks/pre-commit`; enable it once per clone with
+`git config core.hooksPath .githooks`.
 
 ### Idioms & Style
 
@@ -124,6 +128,7 @@ If either step fails, the commit is blocked. Use `--no-verify` only with explici
 - **Error handling** — return errors with descriptive named error sets; log via `std.log` rather than `std.debug.print` in library code
 - **Naming** — snake_case for functions/variables, CamelCase for types, SCREAMING_SNAKE for constants (Zig stdlib convention)
 - **No C interop unless required** — keep pure Zig unless a dependency forces `@cImport`
+- **No deprecated APIs before Zig 1.0** — never use stdlib/language APIs marked deprecated in the current Zig release; migrate to the documented replacement immediately (e.g. `allocPrint` → `Allocator.print`, `@intFromEnum` → `@backingInt`, `builtin.os` → `builtin.target.os`)
 
 ### Dependency Rules
 
