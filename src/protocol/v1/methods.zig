@@ -644,6 +644,7 @@ const PromptWorker = struct {
         // params: {sessionId, toolCall, options: []}
         var tool_call: std.json.ObjectMap = .empty;
         try tool_call.put(allocator, "toolCallId", .{ .string = call.id });
+        try tool_call.put(allocator, "name", .{ .string = tool.name });
         try tool_call.put(allocator, "title", .{ .string = tool.name });
         try tool_call.put(allocator, "kind", .{ .string = tool.kind });
         try tool_call.put(allocator, "status", .{ .string = "pending" });
@@ -687,6 +688,7 @@ const PromptWorker = struct {
         defer update.deinit(allocator);
         update.put(allocator, "sessionUpdate", .{ .string = if (std.mem.eql(u8, status, "pending")) "tool_call" else "tool_call_update" }) catch return;
         update.put(allocator, "toolCallId", .{ .string = call.id }) catch return;
+        update.put(allocator, "name", .{ .string = tool.name }) catch return;
         update.put(allocator, "title", .{ .string = tool.name }) catch return;
         update.put(allocator, "kind", .{ .string = tool.kind }) catch return;
         update.put(allocator, "status", .{ .string = status }) catch return;
@@ -712,6 +714,7 @@ const PromptWorker = struct {
         defer update.deinit(allocator);
         update.put(allocator, "sessionUpdate", .{ .string = "tool_call_update" }) catch return;
         update.put(allocator, "toolCallId", .{ .string = call.id }) catch return;
+        update.put(allocator, "name", .{ .string = call.name }) catch return;
         update.put(allocator, "status", .{ .string = "completed" }) catch return;
         update.put(allocator, "rawOutput", .{ .string = result }) catch return;
 

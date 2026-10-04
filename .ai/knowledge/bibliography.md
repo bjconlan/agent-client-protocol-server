@@ -4,9 +4,9 @@ External references — maps URLs to local files in `references/`.
 
 ## Agent Client Protocol
 
-- **Source:** https://github.com/zed-industries/agent-client-protocol (repo)
-  **Local:** references/acp-schema-v1.json, references/acp-schema-v2.json
-  **Notes:** JSON Schema for both protocol versions (v1 = current implementation target, v2 = future). Fetched 2026-08-10.
+- **Source:** https://github.com/agentclientprotocol/agent-client-protocol (repo — moved from `zed-industries/agent-client-protocol`)
+  **Local:** references/acp-schema-v1.json, references/acp-meta-v1.json, references/acp-meta-v1-unstable.json, references/acp-schema-v2.json, references/acp-meta-v2.json
+  **Notes:** JSON Schema + method-name metadata. v1 = current implementation target (tag `schema-v1.24.1`); v2 = future, still alpha (tag `schema-v2.0.0-alpha.7`). `providers/*` and `mcp/message` remain in the v2 **unstable** schema. Fetched 2026-10-04.
 - **Source:** https://agentclientprotocol.com
   **Local:** — (hosted docs; repo schemas are authoritative for us)
   **Notes:** Generated docs site for the spec.
